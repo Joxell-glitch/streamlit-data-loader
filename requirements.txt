@@ -1,7 +1,5 @@
 streamlit
-pandas
-numpy
-yfinance
-plotly
-python-dateutil
+streamlit-autorefresh
 requests
+pandas
+twilio
