@@ -3,13 +3,16 @@
 Personal Streamlit web-app to track large on-chain transactions ("whale" moves) for Bitcoin (BTC) and Ethereum (ETH). The dashboard highlights potential insider-like patterns so you can keep an eye on unusual activity. Interface and user guide are bilingual (Italian/English).
 
 ## Features
-- Data provided by the [Blockchair](https://blockchair.com/api/docs) API (free plan). Assets covered: BTC and ETH.
+- Data provided exclusively by the [Blockchair](https://blockchair.com/api/docs) API (free plan). Assets covered: BTC and ETH.
 - Sidebar slider to pick the minimum USD value (100k → 10M) applied to tables, analytics, and notifications.
 - Live monitoring of high-value transfers (native + USD value, explorer links, coinbase flag).
 - Advanced pattern detection per chain: super-whales (≥$10M), 30-minute volume spikes (≥$50M USD), and 30-minute activity spikes (≥5 tx).
 - Whale flow line chart (10-minute buckets) and UTC heatmap of activity.
 - WhatsApp notifications via Twilio secrets—sent only when new patterns appear.
 - Italian/English UI plus localized help page describing the above features.
+
+## Data source
+- The dashboard relies solely on the Blockchair free tier for on-chain BTC and ETH data. No paid providers (e.g., Glassnode) are required.
 
 ## Setup
 1. Install dependencies: `pip install -r requirements.txt`.

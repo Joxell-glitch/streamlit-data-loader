@@ -1,7 +1,7 @@
-import datetime
 import os
+import time
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import altair as alt
 import pandas as pd
@@ -41,7 +41,12 @@ SUPER_WHALE_THRESHOLD = 10_000_000
 VOLUME_SPIKE_THRESHOLD = 50_000_000
 ACTIVITY_SPIKE_COUNT = 5
 PATTERN_WINDOW_MINUTES = 30
-GLASSNODE_API_KEY = os.getenv("GLASSNODE_API_KEY", "")
+
+
+class BlockchairAPIError(RuntimeError):
+    def __init__(self, message: str, status_code: Optional[int] = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 # Configurazione lingua default e supportate
 if "lang" not in st.session_state:
@@ -81,18 +86,14 @@ TEXT = {
         "min_value_label": "Minimum transaction value (USD)",
         "flow_chart_title": "Whale flows over time (USD)",
         "heatmap_title": "Whale activity heatmap by hour (UTC)",
-        "blockchair_error_msg": "Error fetching data from Blockchair (free plan). Please try again later.",
+        "blockchair_error_msg": "Error fetching data from Blockchair (free plan). HTTP code: {status_code}. Details: {error_msg}. Please try again later.",
+        "blockchair_unavailable_note": "Blockchair data currently unavailable. Please try again later.",
         "super_whale_msg": "Super-whale on {chain}: at least one transaction ≥ 10M USD.",
         "volume_spike_msg": "Volume spike on {chain}: ≥ {value} USD moved in the last 30 minutes.",
         "activity_spike_msg": "Activity spike on {chain}: {count} transactions ≥ {threshold} in the last 30 minutes.",
         "no_pattern_msg": "No significant pattern detected in the latest data.",
         "not_enough_data_msg": "Not enough data to build this visualization yet.",
         "threshold_auto_note": "Note: threshold auto-lowered to {value} to show at least some transactions.",
-        "glassnode_section_title": "Network activity (Glassnode fallback)",
-        "glassnode_no_key_or_data": "No network activity data available from Glassnode (check API key or free tier limits).",
-        "glassnode_chart_title": "Daily BTC/ETH transaction count (Glassnode – free tier)",
-        "glassnode_comparison_note": "Glassnode data used only as a comparison of network activity.",
-        "glassnode_fallback_note": "Blockchair data unavailable: showing Glassnode network activity (free tier).",
     },
     "it": {
         "title": "Dashboard Monitor Balene",
@@ -126,18 +127,14 @@ TEXT = {
         "min_value_label": "Valore minimo transazione (USD)",
         "flow_chart_title": "Flussi delle balene nel tempo (USD)",
         "heatmap_title": "Heatmap attività balene per ora (UTC)",
-        "blockchair_error_msg": "Errore nel recupero dei dati da Blockchair (piano gratuito). Riprova più tardi.",
+        "blockchair_error_msg": "Errore nel recupero dei dati da Blockchair (piano gratuito). Codice HTTP: {status_code}. Messaggio: {error_msg}. Riprova più tardi.",
+        "blockchair_unavailable_note": "Dati Blockchair non disponibili al momento. Riprova più tardi.",
         "super_whale_msg": "Super-balena su {chain}: almeno una transazione ≥ 10M USD.",
         "volume_spike_msg": "Spike di volume su {chain}: ≥ {value} USD mossi negli ultimi 30 minuti.",
         "activity_spike_msg": "Spike di attività su {chain}: {count} transazioni ≥ {threshold} negli ultimi 30 minuti.",
         "no_pattern_msg": "Nessun pattern particolare rilevato negli ultimi dati.",
         "not_enough_data_msg": "Dati insufficienti per costruire questa visualizzazione.",
         "threshold_auto_note": "Nota: soglia auto-ridotta a {value} per mostrare almeno alcune transazioni.",
-        "glassnode_section_title": "Attività di rete (fallback Glassnode)",
-        "glassnode_no_key_or_data": "Nessun dato di attività rete disponibile da Glassnode (controlla API key o limiti free).",
-        "glassnode_chart_title": "Numero di transazioni giornaliere BTC/ETH (Glassnode – free tier)",
-        "glassnode_comparison_note": "Dati Glassnode usati solo come confronto di attività di rete.",
-        "glassnode_fallback_note": "Dati Blockchair non disponibili: mostriamo l'attività di rete da Glassnode (free tier).",
     },
 }
 
@@ -156,16 +153,52 @@ def format_usd(value: float) -> str:
 def fetch_blockchair_transactions(asset_symbol: str, chain: str, limit: int = 100) -> pd.DataFrame:
     url = f"{BLOCKCHAIR_BASE_URL}/{chain}/transactions"
     params = {"limit": limit}
-    try:
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-    except requests.RequestException as exc:
-        raise RuntimeError(f"{chain}: {exc}") from exc
+    attempts = 2
+    response = None
+    for attempt in range(attempts):
+        try:
+            response = requests.get(url, params=params, timeout=10)
+            break
+        except requests.exceptions.RequestException as exc:
+            if attempt == attempts - 1:
+                raise BlockchairAPIError(f"{chain}: {exc}") from exc
+            time.sleep(1)
+    if response is None:
+        raise BlockchairAPIError(f"{chain}: no response from Blockchair")
 
-    payload = response.json()
-    tx_list = payload.get("data", [])
+    if response.status_code != 200:
+        error_message = ""
+        try:
+            error_payload = response.json()
+            if isinstance(error_payload, dict):
+                error_message = (
+                    error_payload.get("context")
+                    or error_payload.get("error")
+                    or error_payload.get("message")
+                    or ""
+                )
+        except ValueError:
+            error_message = response.text[:200]
+        error_message = (error_message or "Unexpected response").strip()
+        raise BlockchairAPIError(error_message, status_code=response.status_code)
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise BlockchairAPIError("Invalid JSON response from Blockchair") from exc
+
+    data_section = payload.get("data", [])
+    if isinstance(data_section, dict):
+        tx_list = data_section.get("transactions", [])
+    else:
+        tx_list = data_section or []
+    if not isinstance(tx_list, list):
+        tx_list = []
+
     rows = []
     for tx in tx_list:
+        if not isinstance(tx, dict):
+            continue
         tx_hash = tx.get("hash")
         if not tx_hash:
             continue
@@ -203,11 +236,13 @@ def load_whale_transactions(min_value_usd: float = MIN_VALUE_USD):
     for asset_symbol, meta in SUPPORTED_ASSETS.items():
         try:
             df_chain = fetch_blockchair_transactions(asset_symbol, meta["chain"], limit=100)
-        except RuntimeError:
-            return None, min_value_usd
+        except BlockchairAPIError as exc:
+            return None, min_value_usd, {"status_code": exc.status_code, "message": str(exc)}
+        except Exception as exc:
+            return None, min_value_usd, {"status_code": None, "message": str(exc)}
         frames.append(df_chain)
     if not frames:
-        return pd.DataFrame(), min_value_usd
+        return pd.DataFrame(), min_value_usd, None
     df_all = pd.concat(frames, ignore_index=True)
     thresholds = sorted(
         {min_value_usd, max(min_value_usd / 2, 100_000), 100_000}, reverse=True
@@ -221,54 +256,8 @@ def load_whale_transactions(min_value_usd: float = MIN_VALUE_USD):
             used_threshold = thr
             break
     if best_df is None:
-        return pd.DataFrame(), thresholds[-1]
-    return best_df, used_threshold
-
-
-def fetch_glassnode_tx_activity(asset: str, days: int = 7) -> pd.DataFrame:
-    api_key = GLASSNODE_API_KEY
-    if not api_key:
-        return pd.DataFrame()
-    url = "https://api.glassnode.com/v1/metrics/transactions/count"
-    end_ts = int(datetime.datetime.utcnow().timestamp())
-    start_ts = end_ts - days * 24 * 60 * 60
-    params = {
-        "api_key": api_key,
-        "a": asset,
-        "s": start_ts,
-        "u": end_ts,
-        "i": "24h",
-    }
-    try:
-        resp = requests.get(url, params=params, timeout=10)
-        resp.raise_for_status()
-    except Exception:
-        return pd.DataFrame()
-    try:
-        data = resp.json()
-    except ValueError:
-        return pd.DataFrame()
-    if not data:
-        return pd.DataFrame()
-    df = pd.DataFrame(data)
-    if not {"t", "v"}.issubset(df.columns):
-        return pd.DataFrame()
-    df["time"] = pd.to_datetime(df["t"], unit="s", utc=True)
-    df["tx_count"] = df["v"].astype(float)
-    df["asset"] = asset.upper()
-    return df[["asset", "time", "tx_count"]].sort_values("time")
-
-
-def load_glassnode_activity(days: int = 7) -> pd.DataFrame:
-    assets = ["BTC", "ETH"]
-    frames = []
-    for asset in assets:
-        df_asset = fetch_glassnode_tx_activity(asset, days=days)
-        if df_asset is not None and not df_asset.empty:
-            frames.append(df_asset)
-    if not frames:
-        return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True)
+        return pd.DataFrame(), thresholds[-1], None
+    return best_df, used_threshold, None
 
 
 def detect_pattern_messages(
@@ -374,13 +363,26 @@ st.write(
 notify_placeholder = st.empty()
 
 with st.spinner(TEXT[lang]["loading"]):
-    df_transactions, used_threshold = load_whale_transactions(min_value_usd)
+    df_transactions, used_threshold, blockchair_error_details = load_whale_transactions(
+        min_value_usd
+    )
 
-blockchair_error = df_transactions is None
-if blockchair_error:
-    st.error(TEXT[lang]["blockchair_error_msg"])
+if blockchair_error_details:
+    status_code = blockchair_error_details.get("status_code")
+    status_display = status_code if status_code is not None else "n/a"
+    error_message = blockchair_error_details.get("message") or TEXT[lang][
+        "blockchair_unavailable_note"
+    ]
+    st.error(
+        TEXT[lang]["blockchair_error_msg"].format(
+            status_code=status_display, error_msg=error_message
+        )
+    )
+    st.info(TEXT[lang]["blockchair_unavailable_note"])
     df_transactions = pd.DataFrame()
     used_threshold = min_value_usd
+elif df_transactions is None:
+    df_transactions = pd.DataFrame()
 
 pattern_messages = detect_pattern_messages(df_transactions, lang, used_threshold)
 
@@ -475,17 +477,3 @@ else:
         )
         st.altair_chart(chart, use_container_width=True)
 
-st.markdown(f"### {TEXT[lang]['glassnode_section_title']}")
-if blockchair_error or df_transactions.empty:
-    st.caption(TEXT[lang]["glassnode_fallback_note"])
-else:
-    st.caption(TEXT[lang]["glassnode_comparison_note"])
-
-activity_df = load_glassnode_activity(days=7)
-if activity_df.empty:
-    st.info(TEXT[lang]["glassnode_no_key_or_data"])
-else:
-    activity_pivot = activity_df.pivot(index="time", columns="asset", values="tx_count")
-    activity_pivot = activity_pivot.sort_index()
-    st.markdown(f"#### {TEXT[lang]['glassnode_chart_title']}")
-    st.line_chart(activity_pivot)
