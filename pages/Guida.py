@@ -7,67 +7,63 @@ lang = st.session_state.get("lang", "it")
 guida_it = """
 # Guida all'utilizzo di Whale Monitor
 
-Whale Monitor è una dashboard personale per tracciare i movimenti delle balene su **Bitcoin (BTC)** ed **Ethereum (ETH)**. I dati provengono esclusivamente dalla REST API gratuita di [Blockchair](https://blockchair.com/api/docs), così puoi usare l'app senza chiavi proprietarie a pagamento.
+Whale Monitor controlla esclusivamente le chain **Bitcoin (BTC)** ed **Ethereum (ETH)** utilizzando solo i dati del piano gratuito di [Blockchair](https://blockchair.com/api/docs). Nessuna integrazione con Whale Alert o altri provider a pagamento.
 
-## Sezioni della Dashboard
-- **Ultime transazioni delle balene:** tabella aggiornata con le transazioni sopra i 500.000 USD su BTC/ETH. Per ogni movimento sono mostrati: ora UTC, asset, valore nella coin, controvalore USD, flag Coinbase (true/false) e link diretto all'explorer Blockchair.
-- **Pattern di attenzione:** la sezione "Allerta Pattern" riassume eventuali segnali statistici come super-balene (singole tx ≥10M USD), cluster multipli (almeno 3 tx ≥1M USD in 30 minuti sulla stessa chain) e spike d'attività (variazioni nette di tx ≥500k USD tra l'ultima ora e la precedente). Questi non sono consigli di investimento, ma indizi da monitorare.
-- **Auto-refresh:** per rispettare i limiti gratuiti di Blockchair, l'aggiornamento automatico è impostato di default a ogni 3 minuti. Puoi disattivarlo dalla sidebar o forzare un refresh manuale con il pulsante "Aggiorna adesso".
+## Cosa trovi nella dashboard
+- **Slider valore minimo:** dalla sidebar imposta la soglia (100k → 10M USD, default 500k) per filtrare le transazioni mostrate e i pattern calcolati.
+- **Ultime transazioni:** tabella bilingue con orario UTC, asset, valore nella coin, controvalore USD, flag coinbase e link Blockchair.
+- **Pattern avanzati:** la sezione "Allerta Pattern" evidenzia tre situazioni per BTC e ETH: super-balene (tx ≥10M USD), spike di volume 30 minuti (≥50M USD in totale), spike di attività 30 minuti (≥5 tx sopra soglia). I messaggi sono in italiano/inglese.
+- **Grafico dei flussi:** aggregazione dei volumi USD ogni 10 minuti per visualizzare il ritmo dei trasferimenti.
+- **Heatmap attività:** matrice oraria (UTC) che mostra in quali ore le balene sono più attive per ciascuna chain.
+- **Notifiche WhatsApp:** se configuri Twilio, ricevi un messaggio solo quando compare un nuovo pattern rispetto al refresh precedente.
+- **Auto-refresh:** l'app si aggiorna automaticamente ogni 3 minuti (valore consigliato per restare nel limite del piano gratuito Blockchair). Puoi disattivarlo o forzare un refresh manuale.
 
-## Notifiche WhatsApp (Twilio)
-Configura le variabili `TWILIO_SID`, `TWILIO_TOKEN`, `TWILIO_WHATSAPP_TO`, `TWILIO_WHATSAPP_FROM` per ricevere messaggi WhatsApp quando viene rilevato un nuovo pattern rispetto al precedente refresh. Ogni alert contiene asset, valore stimato, timestamp UTC e link Blockchair.
-
-## Suggerimenti di lettura dei segnali
-- **Super-balena:** singola transazione gigantesca (≥10M USD). Può precedere movimenti di mercato importanti, specialmente se avviene vicino a resistenze o supporti.
-- **Cluster di balene:** almeno tre trasferimenti ≥1M USD sulla stessa chain in 30 minuti. I cluster possono indicare coordinamento o risposta a una notizia in arrivo.
-- **Spike improvviso:** quando nell'ultima ora avviene un numero di transazioni ≥500k USD molto superiore all'ora precedente. Può essere preludio a volatilità.
+## Configurazione WhatsApp
+Inserisci in `st.secrets` le chiavi `TWILIO_SID`, `TWILIO_TOKEN`, `TWILIO_WHATSAPP_FROM`, `TWILIO_WHATSAPP_TO`. L'app invia un'unica notifica con tutti i pattern rilevati solo quando la firma dei messaggi cambia.
 
 ## Limiti e buone pratiche
-- Solo BTC ed ETH sono monitorati. Altre chain non sono incluse.
-- I dati sono pubblici e potrebbero avere ritardi di alcuni secondi rispetto al blocco originale.
-- Nessun indirizzo viene etichettato come exchange nel piano gratuito Blockchair, quindi il contesto "deposito" o "prelievo" non è disponibile.
-- I segnali sono indicazioni statistiche, **non** garanzie di profitto. Combinali con analisi tecnica/fondamentale.
+- I dati provengono da Blockchair free tier: possono esserci piccoli ritardi e non sono disponibili etichette exchange.
+- Solo BTC ed ETH sono supportati.
+- I pattern sono indizi statistici, non consigli d'investimento.
 
-## Configurazione rapida
+## Avvio rapido
 1. Installa le dipendenze (`pip install -r requirements.txt`).
 2. Esegui `streamlit run app.py`.
-3. (Opzionale) Imposta le credenziali Twilio per WhatsApp.
-4. Personalizza l'intervallo di refresh settando `AUTO_REFRESH_SECONDS` (minimo 60s) se vuoi limitare ulteriormente le richieste a Blockchair.
+3. (Opzionale) aggiungi le credenziali Twilio nei secrets.
+4. Personalizza `AUTO_REFRESH_SECONDS` (minimo 60) se vuoi modificare la frequenza.
 
-Buon monitoraggio e buona gestione del rischio!
+Buon monitoraggio!
 """
 
 guida_en = """
 # Guide to Using Whale Monitor
 
-Whale Monitor is a personal dashboard to track whale movements on **Bitcoin (BTC)** and **Ethereum (ETH)**. All data comes from the free [Blockchair](https://blockchair.com/api/docs) REST API, so you no longer need a paid Whale Alert key.
+Whale Monitor focuses on **Bitcoin (BTC)** and **Ethereum (ETH)** only, pulling data exclusively from the free [Blockchair](https://blockchair.com/api/docs) plan. No Whale Alert dependency is required.
 
-## Dashboard Sections
-- **Latest whale transactions:** table listing BTC/ETH transfers above $500k USD. Each row shows UTC time, asset, value in native coin, USD estimate, Coinbase flag, and a direct Blockchair explorer link.
-- **Attention patterns:** the "Pattern Alert" section lists statistical signals such as super-whales (single tx ≥$10M), whale clusters (≥3 tx ≥$1M within 30 minutes on the same chain), and activity spikes (big change in ≥$500k tx between the last hour and the previous hour). These are *not* investment advice—use them as early warnings.
-- **Auto-refresh:** to stay within Blockchair's free quota, automatic refresh defaults to every 3 minutes. Disable it from the sidebar or press "Refresh now" for a manual update.
+## What the dashboard includes
+- **Minimum value slider:** from the sidebar you can choose the USD threshold (100k → 10M, default 500k). The filter applies to both the table and pattern logic.
+- **Latest transactions:** bilingual table showing UTC time, asset, native amount, USD value, coinbase flag, and the Blockchair explorer link.
+- **Advanced patterns:** the "Pattern Alert" area highlights three BTC/ETH situations—super-whale (≥$10M tx), 30-minute volume spikes (≥$50M total), and 30-minute activity spikes (≥5 transfers above the threshold). Messages adapt to the selected language.
+- **Flow chart:** 10-minute buckets of USD volume to visualize how funds move over time.
+- **Activity heatmap:** hour-by-hour (UTC) view of when whales are the most active per chain.
+- **WhatsApp alerts:** once Twilio is configured, a notification is sent only when new patterns appear compared to the previous refresh.
+- **Auto-refresh:** the app refreshes every 3 minutes by default to respect the Blockchair free-plan limits. Disable it or trigger a manual reload if needed.
 
-## WhatsApp Notifications (Twilio)
-Set `TWILIO_SID`, `TWILIO_TOKEN`, `TWILIO_WHATSAPP_TO`, and `TWILIO_WHATSAPP_FROM` to receive WhatsApp alerts when a new pattern appears compared to the previous refresh. Alerts include asset, estimated value, UTC timestamp, and a Blockchair link.
+## WhatsApp setup
+Store `TWILIO_SID`, `TWILIO_TOKEN`, `TWILIO_WHATSAPP_FROM`, and `TWILIO_WHATSAPP_TO` inside `st.secrets`. The app builds a signature for detected patterns and sends a single message only when the signature changes.
 
-## Reading the Signals
-- **Super-whale:** a single massive transfer (≥$10M). It often precedes strong market moves, especially if liquidity is thin.
-- **Whale cluster:** at least three ≥$1M transfers on the same chain within 30 minutes, possibly hinting at coordinated activity or reaction to fresh news.
-- **Sudden spike:** when the number of ≥$500k transfers in the last hour far exceeds the previous hour. Expect volatility when this happens near key price levels.
+## Limitations & tips
+- Blockchair free tier may introduce slight delays and does not include exchange tagging.
+- Only BTC and ETH are monitored.
+- Patterns are statistical hints, not trading advice.
 
-## Limitations & Best Practices
-- Only BTC and ETH are covered.
-- Data may lag the on-chain block by a few seconds.
-- Exchange tagging is unavailable on the free Blockchair tier, so direction (deposit/withdrawal) is unknown.
-- Signals are statistical hints, **not** financial advice. Combine them with your own analysis.
-
-## Quick Setup
+## Quick start
 1. Install dependencies (`pip install -r requirements.txt`).
-2. Run `streamlit run app.py`.
-3. (Optional) add Twilio WhatsApp credentials for push alerts.
-4. Adjust `AUTO_REFRESH_SECONDS` (minimum 60s) if you need a different polling interval.
+2. Launch with `streamlit run app.py`.
+3. (Optional) add Twilio credentials to Streamlit secrets.
+4. Adjust `AUTO_REFRESH_SECONDS` (minimum 60) if you need a different schedule.
 
-Happy monitoring—and stay cautious!
+Happy monitoring!
 """
 
 if lang == "it":
