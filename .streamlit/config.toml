@@ -1,7 +1,5 @@
 [server]
-headless = true
-port = "${PORT}"
-enableCORS = false
+enableCORS = true
 
 [theme]
 base = "light"
