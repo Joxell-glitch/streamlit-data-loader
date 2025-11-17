@@ -118,7 +118,7 @@ TEXT = {
         "min_value_label": "Valore minimo transazione (USD)",
         "flow_chart_title": "Flussi delle balene nel tempo (USD)",
         "heatmap_title": "Heatmap attività balene per ora (UTC)",
-        "blockchair_error_msg": "Errore nel recupero dati da Blockchair (piano gratuito). Riprova più tardi.",
+        "blockchair_error_msg": "Errore nel recupero dei dati da Blockchair (piano gratuito). Riprova più tardi.",
         "super_whale_msg": "Super-balena su {chain}: almeno una transazione ≥ 10M USD.",
         "volume_spike_msg": "Spike di volume su {chain}: ≥ {value} USD mossi negli ultimi 30 minuti.",
         "activity_spike_msg": "Spike di attività su {chain}: {count} transazioni ≥ {threshold} negli ultimi 30 minuti.",
@@ -178,7 +178,10 @@ def fetch_blockchair_transactions(asset_symbol: str, chain: str, limit: int = 10
                 "link_explorer": f"https://blockchair.com/{chain}/transaction/{tx_hash}",
             }
         )
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    return df.sort_values("time", ascending=False).reset_index(drop=True)
 
 
 def load_whale_transactions(min_value_usd: float = MIN_VALUE_USD) -> pd.DataFrame:
@@ -265,7 +268,7 @@ lang_option = st.sidebar.selectbox(
 new_lang = "it" if lang_option == "Italiano" else "en"
 if new_lang != lang:
     st.session_state.lang = new_lang
-    st.experimental_rerun()
+    st.rerun()
 lang = st.session_state.lang
 
 st.sidebar.markdown(f"[*{TEXT[lang]['guide']}*](/Guida)")
@@ -287,7 +290,7 @@ if auto:
     st_autorefresh(interval=AUTO_REFRESH_SECONDS * 1000, limit=10000, key="auto_refresh")
 
 if st.sidebar.button(TEXT[lang]["manual_refresh"]):
-    st.experimental_rerun()
+    st.rerun()
 
 # ---- Titolo principale ----
 st.title(TEXT[lang]["title"])
