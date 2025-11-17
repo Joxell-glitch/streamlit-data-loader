@@ -1,3 +1,4 @@
+import datetime
 import os
 from datetime import datetime
 from typing import Dict, List
@@ -40,6 +41,7 @@ SUPER_WHALE_THRESHOLD = 10_000_000
 VOLUME_SPIKE_THRESHOLD = 50_000_000
 ACTIVITY_SPIKE_COUNT = 5
 PATTERN_WINDOW_MINUTES = 30
+GLASSNODE_API_KEY = os.getenv("GLASSNODE_API_KEY", "")
 
 # Configurazione lingua default e supportate
 if "lang" not in st.session_state:
@@ -85,6 +87,12 @@ TEXT = {
         "activity_spike_msg": "Activity spike on {chain}: {count} transactions ≥ {threshold} in the last 30 minutes.",
         "no_pattern_msg": "No significant pattern detected in the latest data.",
         "not_enough_data_msg": "Not enough data to build this visualization yet.",
+        "threshold_auto_note": "Note: threshold auto-lowered to {value} to show at least some transactions.",
+        "glassnode_section_title": "Network activity (Glassnode fallback)",
+        "glassnode_no_key_or_data": "No network activity data available from Glassnode (check API key or free tier limits).",
+        "glassnode_chart_title": "Daily BTC/ETH transaction count (Glassnode – free tier)",
+        "glassnode_comparison_note": "Glassnode data used only as a comparison of network activity.",
+        "glassnode_fallback_note": "Blockchair data unavailable: showing Glassnode network activity (free tier).",
     },
     "it": {
         "title": "Dashboard Monitor Balene",
@@ -124,6 +132,12 @@ TEXT = {
         "activity_spike_msg": "Spike di attività su {chain}: {count} transazioni ≥ {threshold} negli ultimi 30 minuti.",
         "no_pattern_msg": "Nessun pattern particolare rilevato negli ultimi dati.",
         "not_enough_data_msg": "Dati insufficienti per costruire questa visualizzazione.",
+        "threshold_auto_note": "Nota: soglia auto-ridotta a {value} per mostrare almeno alcune transazioni.",
+        "glassnode_section_title": "Attività di rete (fallback Glassnode)",
+        "glassnode_no_key_or_data": "Nessun dato di attività rete disponibile da Glassnode (controlla API key o limiti free).",
+        "glassnode_chart_title": "Numero di transazioni giornaliere BTC/ETH (Glassnode – free tier)",
+        "glassnode_comparison_note": "Dati Glassnode usati solo come confronto di attività di rete.",
+        "glassnode_fallback_note": "Dati Blockchair non disponibili: mostriamo l'attività di rete da Glassnode (free tier).",
     },
 }
 
@@ -184,18 +198,77 @@ def fetch_blockchair_transactions(asset_symbol: str, chain: str, limit: int = 10
     return df.sort_values("time", ascending=False).reset_index(drop=True)
 
 
-def load_whale_transactions(min_value_usd: float = MIN_VALUE_USD) -> pd.DataFrame:
+def load_whale_transactions(min_value_usd: float = MIN_VALUE_USD):
     frames = []
     for asset_symbol, meta in SUPPORTED_ASSETS.items():
-        df_chain = fetch_blockchair_transactions(asset_symbol, meta["chain"], limit=100)
+        try:
+            df_chain = fetch_blockchair_transactions(asset_symbol, meta["chain"], limit=100)
+        except RuntimeError:
+            return None, min_value_usd
         frames.append(df_chain)
     if not frames:
-        return pd.DataFrame()
+        return pd.DataFrame(), min_value_usd
     df_all = pd.concat(frames, ignore_index=True)
-    df_all = df_all[df_all["value_usd"] >= min_value_usd]
-    if df_all.empty:
-        return df_all
-    return df_all.sort_values("time", ascending=False).reset_index(drop=True)
+    thresholds = sorted(
+        {min_value_usd, max(min_value_usd / 2, 100_000), 100_000}, reverse=True
+    )
+    best_df = None
+    used_threshold = min_value_usd
+    for thr in thresholds:
+        df_thr = df_all[df_all["value_usd"] >= thr]
+        if not df_thr.empty:
+            best_df = df_thr.sort_values("time", ascending=False).reset_index(drop=True)
+            used_threshold = thr
+            break
+    if best_df is None:
+        return pd.DataFrame(), thresholds[-1]
+    return best_df, used_threshold
+
+
+def fetch_glassnode_tx_activity(asset: str, days: int = 7) -> pd.DataFrame:
+    api_key = GLASSNODE_API_KEY
+    if not api_key:
+        return pd.DataFrame()
+    url = "https://api.glassnode.com/v1/metrics/transactions/count"
+    end_ts = int(datetime.datetime.utcnow().timestamp())
+    start_ts = end_ts - days * 24 * 60 * 60
+    params = {
+        "api_key": api_key,
+        "a": asset,
+        "s": start_ts,
+        "u": end_ts,
+        "i": "24h",
+    }
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+    except Exception:
+        return pd.DataFrame()
+    try:
+        data = resp.json()
+    except ValueError:
+        return pd.DataFrame()
+    if not data:
+        return pd.DataFrame()
+    df = pd.DataFrame(data)
+    if not {"t", "v"}.issubset(df.columns):
+        return pd.DataFrame()
+    df["time"] = pd.to_datetime(df["t"], unit="s", utc=True)
+    df["tx_count"] = df["v"].astype(float)
+    df["asset"] = asset.upper()
+    return df[["asset", "time", "tx_count"]].sort_values("time")
+
+
+def load_glassnode_activity(days: int = 7) -> pd.DataFrame:
+    assets = ["BTC", "ETH"]
+    frames = []
+    for asset in assets:
+        df_asset = fetch_glassnode_tx_activity(asset, days=days)
+        if df_asset is not None and not df_asset.empty:
+            frames.append(df_asset)
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
 
 
 def detect_pattern_messages(
@@ -301,13 +374,15 @@ st.write(
 notify_placeholder = st.empty()
 
 with st.spinner(TEXT[lang]["loading"]):
-    try:
-        df_transactions = load_whale_transactions(min_value_usd)
-    except RuntimeError:
-        st.error(TEXT[lang]["blockchair_error_msg"])
-        df_transactions = pd.DataFrame()
+    df_transactions, used_threshold = load_whale_transactions(min_value_usd)
 
-pattern_messages = detect_pattern_messages(df_transactions, lang, min_value_usd)
+blockchair_error = df_transactions is None
+if blockchair_error:
+    st.error(TEXT[lang]["blockchair_error_msg"])
+    df_transactions = pd.DataFrame()
+    used_threshold = min_value_usd
+
+pattern_messages = detect_pattern_messages(df_transactions, lang, used_threshold)
 
 if "last_sig" not in st.session_state:
     st.session_state["last_sig"] = ""
@@ -328,6 +403,8 @@ else:
     st.info(TEXT[lang]["no_pattern_msg"])
 
 st.markdown(f"### {TEXT[lang]['table_title']}")
+if used_threshold < min_value_usd:
+    st.caption(TEXT[lang]["threshold_auto_note"].format(value=format_usd(used_threshold)))
 if df_transactions.empty:
     st.info(TEXT[lang]["no_data"])
 else:
@@ -397,3 +474,18 @@ else:
             )
         )
         st.altair_chart(chart, use_container_width=True)
+
+st.markdown(f"### {TEXT[lang]['glassnode_section_title']}")
+if blockchair_error or df_transactions.empty:
+    st.caption(TEXT[lang]["glassnode_fallback_note"])
+else:
+    st.caption(TEXT[lang]["glassnode_comparison_note"])
+
+activity_df = load_glassnode_activity(days=7)
+if activity_df.empty:
+    st.info(TEXT[lang]["glassnode_no_key_or_data"])
+else:
+    activity_pivot = activity_df.pivot(index="time", columns="asset", values="tx_count")
+    activity_pivot = activity_pivot.sort_index()
+    st.markdown(f"#### {TEXT[lang]['glassnode_chart_title']}")
+    st.line_chart(activity_pivot)
