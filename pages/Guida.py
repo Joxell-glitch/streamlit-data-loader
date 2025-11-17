@@ -7,84 +7,67 @@ lang = st.session_state.get("lang", "it")
 guida_it = """
 # Guida all'utilizzo di Whale Monitor
 
-Whale Monitor è una dashboard personale per tracciare grandi transazioni ("balene") sulle principali criptovalute.  
-Di seguito troverai istruzioni e spiegazioni per interpretare i dati mostrati.
+Whale Monitor è una dashboard personale per tracciare i movimenti delle balene su **Bitcoin (BTC)** ed **Ethereum (ETH)**. I dati provengono esclusivamente dalla REST API gratuita di [Blockchair](https://blockchair.com/api/docs), così puoi usare l'app senza chiavi proprietarie a pagamento.
 
-**Selezione della lingua:** Puoi scegliere Italiano o Inglese dal menu a sinistra (sezione *Lingua*). I testi dell'app si aggiorneranno di conseguenza.
+## Sezioni della Dashboard
+- **Ultime transazioni delle balene:** tabella aggiornata con le transazioni sopra i 500.000 USD su BTC/ETH. Per ogni movimento sono mostrati: ora UTC, asset, valore nella coin, controvalore USD, flag Coinbase (true/false) e link diretto all'explorer Blockchair.
+- **Pattern di attenzione:** la sezione "Allerta Pattern" riassume eventuali segnali statistici come super-balene (singole tx ≥10M USD), cluster multipli (almeno 3 tx ≥1M USD in 30 minuti sulla stessa chain) e spike d'attività (variazioni nette di tx ≥500k USD tra l'ultima ora e la precedente). Questi non sono consigli di investimento, ma indizi da monitorare.
+- **Auto-refresh:** per rispettare i limiti gratuiti di Blockchair, l'aggiornamento automatico è impostato di default a ogni 3 minuti. Puoi disattivarlo dalla sidebar o forzare un refresh manuale con il pulsante "Aggiorna adesso".
 
-## Sezioni della Dashboard:
-- **Ultime transazioni delle balene:** Nella pagina principale vedrai una tabella aggiornata in tempo reale con le transazioni di valore superiore a 500.000 USD per i 5 asset principali (Bitcoin, Ethereum, Tether, BNB, USD Coin). Per ciascuna transazione vengono mostrati:
-    - **Ora (UTC):** timestamp in tempo universale.
-    - **Asset:** la criptovaluta (simbolo) e blockchain (ad esempio *BTC (Bitcoin)*, *ETH (Ethereum)*).
-    - **Quantità:** l'ammontare di criptovaluta trasferito.
-    - **Valore (USD):** il controvalore approssimativo in dollari.
-    - **Da:** l'indirizzo mittente. Se è noto (ad esempio un exchange o un wallet identificato), viene mostrato il nome (es. *Binance*). Altrimenti viene visualizzato un estratto dell'indirizzo (primi e ultimi caratteri). Se l'indirizzo è un exchange, vedrai la dicitura "(exchange)" accanto.
-    - **A:** l'indirizzo destinatario, formattato analogamente a "Da".
-    - **Note:** eventuali annotazioni automatiche. Ad esempio, *"Grande deposito su exchange!"* indica che la transazione è un trasferimento verso un exchange (possibile segnale di vendita imminente); *"Grande prelievo da exchange!"* indica movimento da un exchange verso un wallet esterno (possibile accumulo). 
+## Notifiche WhatsApp (Twilio)
+Configura le variabili `TWILIO_SID`, `TWILIO_TOKEN`, `TWILIO_WHATSAPP_TO`, `TWILIO_WHATSAPP_FROM` per ricevere messaggi WhatsApp quando viene rilevato un nuovo pattern rispetto al precedente refresh. Ogni alert contiene asset, valore stimato, timestamp UTC e link Blockchair.
 
-- **Allerta Pattern:** Se l'app rileva un pattern sospetto (ad esempio molti depositi su exchange in un breve lasso di tempo), verrà mostrato un riquadro di avviso (in giallo) con la descrizione (*Pattern Alert*). Questo ti informa di un'attività anomala che potrebbe precedere movimenti di mercato importanti.
+## Suggerimenti di lettura dei segnali
+- **Super-balena:** singola transazione gigantesca (≥10M USD). Può precedere movimenti di mercato importanti, specialmente se avviene vicino a resistenze o supporti.
+- **Cluster di balene:** almeno tre trasferimenti ≥1M USD sulla stessa chain in 30 minuti. I cluster possono indicare coordinamento o risposta a una notizia in arrivo.
+- **Spike improvviso:** quando nell'ultima ora avviene un numero di transazioni ≥500k USD molto superiore all'ora precedente. Può essere preludio a volatilità.
 
-- **Aggiornamento dati:** Di default l'auto-aggiornamento è attivo (ogni 15 secondi). Puoi disattivarlo togliendo la spunta a *"Aggiornamento automatico"* nel menu, oppure forzare un refresh immediato cliccando *"Aggiorna adesso"*. L'orario dell'ultimo aggiornamento effettuato è indicato sopra la tabella.
+## Limiti e buone pratiche
+- Solo BTC ed ETH sono monitorati. Altre chain non sono incluse.
+- I dati sono pubblici e potrebbero avere ritardi di alcuni secondi rispetto al blocco originale.
+- Nessun indirizzo viene etichettato come exchange nel piano gratuito Blockchair, quindi il contesto "deposito" o "prelievo" non è disponibile.
+- I segnali sono indicazioni statistiche, **non** garanzie di profitto. Combinali con analisi tecnica/fondamentale.
 
-## Notifiche WhatsApp:
-Se hai configurato le credenziali Twilio nell'app (vedi README), Whale Monitor invierà un messaggio WhatsApp al tuo numero quando si verifica un pattern critico (es. un'allerta importante). Cerca sul tuo WhatsApp messaggi dal mittente Twilio Sandbox.
+## Configurazione rapida
+1. Installa le dipendenze (`pip install -r requirements.txt`).
+2. Esegui `streamlit run app.py`.
+3. (Opzionale) Imposta le credenziali Twilio per WhatsApp.
+4. Personalizza l'intervallo di refresh settando `AUTO_REFRESH_SECONDS` (minimo 60s) se vuoi limitare ulteriormente le richieste a Blockchair.
 
-*Nota:* Assicurati di aver inserito il tuo numero di telefono in formato internazionale corretto nelle variabili d'ambiente (ad esempio `TWILIO_WHATSAPP_TO="+39XXXXXXXX"`). Senza configurazione, l'app non invierà notifiche esterne.
-
-## Interpretazione dei segnali:
-- **Depositi su exchange (rosso):** Quando vedi molte transazioni evidenziate come *"Grande deposito su exchange"*, significa che grandi holder stanno muovendo fondi verso gli exchange. Questo spesso precede una fase di vendita che può far calare il prezzo dell'asset. Tienilo d'occhio: se succede improvvisamente, potrebbe esserci una notizia non ancora pubblica o preparativi per una vendita coordinata.
-- **Prelievi da exchange (verde):** Al contrario, quando le balene spostano fondi fuori dagli exchange (verso wallet privati o cold storage), tendono a non vendere nel breve termine. Molti prelievi possono indicare fiducia nell'asset o accumulo, un segnale potenzialmente rialzista.
-- **Attività multipla di balene:** L'allerta *"Attività inusuale di più balene!"* compare quando diversi movimenti significativi avvengono ravvicinati. Questo potrebbe indicare un evento di mercato imminente. Ad esempio, se 3-4 balene trasferiscono Bitcoin su Binance nell'arco di 10 minuti, è un forte segnale di potenziale pressione di vendita.
-- **Stablecoin in movimento:** Sebbene questa dashboard si concentri su 5 asset, due di essi sono stablecoin (USDT e USDC). Grossi trasferimenti di stablecoin verso exchange potrebbero segnalare che i trader stanno preparando capitale per acquistare altre crypto (potenzialmente rialzista per il mercato crypto in generale). Viceversa, uscita di stablecoin da exchange può significare che stanno ritirando denaro (prendendo profitto).
-
-## Limitazioni:
-- **Copertura transazioni:** Prendiamo in considerazione solo transazioni sopra i 500k USD, quindi se un whale trasferisce una somma inferiore non apparirà.
-- **Dati in tempo reale:** La frequenza di aggiornamento è 15s per evitare di sovraccaricare le API gratuite. Potrebbero sfuggire transazioni se avvengono moltissime in poco tempo.
-- **Indirizzi sconosciuti:** Non tutti i wallet sono identificati; la mancanza di un tag non implica che non sia importante, solo che Whale Alert non sa di chi sia quel wallet.
-- **Nessuna certezza sul mercato:** I segnali mostrati vanno interpretati con cautela. Non è garantito che un deposito su exchange porti a un calo di prezzo; è solo un indizio.
-
-## Configurazione:
-- **Chiave API Whale Alert:** fornisci la tua API key tramite variabile `WHALE_ALERT_KEY` o `streamlit/secrets.toml`.
-- **Credenziali Twilio (WhatsApp):** imposta `TWILIO_SID`, `TWILIO_TOKEN`, `TWILIO_WHATSAPP_TO` (e verifica `TWILIO_WHATSAPP_FROM`).
-- Conserva le credenziali nei secrets per maggiore sicurezza.
-
-**Buon monitoraggio!** Combina queste informazioni con altre analisi per decisioni più consapevoli.
+Buon monitoraggio e buona gestione del rischio!
 """
 
 guida_en = """
 # Guide to Using Whale Monitor
 
-*Whale Monitor* is a personal dashboard to track large cryptocurrency transactions ("whales") on major coins.  
-Below are instructions and explanations to interpret the data.
+Whale Monitor is a personal dashboard to track whale movements on **Bitcoin (BTC)** and **Ethereum (ETH)**. All data comes from the free [Blockchair](https://blockchair.com/api/docs) REST API, so you no longer need a paid Whale Alert key.
 
-**Language selection:** You can switch between Italian and English from the sidebar (*Language* selector). All interface text will update accordingly.
+## Dashboard Sections
+- **Latest whale transactions:** table listing BTC/ETH transfers above $500k USD. Each row shows UTC time, asset, value in native coin, USD estimate, Coinbase flag, and a direct Blockchair explorer link.
+- **Attention patterns:** the "Pattern Alert" section lists statistical signals such as super-whales (single tx ≥$10M), whale clusters (≥3 tx ≥$1M within 30 minutes on the same chain), and activity spikes (big change in ≥$500k tx between the last hour and the previous hour). These are *not* investment advice—use them as early warnings.
+- **Auto-refresh:** to stay within Blockchair's free quota, automatic refresh defaults to every 3 minutes. Disable it from the sidebar or press "Refresh now" for a manual update.
 
-## Dashboard Sections:
-- **Latest Whale Transactions:** The main page shows a real-time table with transactions above 500,000 USD for Bitcoin, Ethereum, Tether, BNB, and USD Coin. Each row includes time, asset, amount, value in USD, sender, receiver, and automatic notes (e.g., deposits/withdrawals on exchanges).
-- **Pattern Alert:** When the app detects suspicious activity (many exchange deposits in a short time), a warning box highlights it so you can react quickly.
-- **Data Refresh:** Auto-refresh runs every 15 seconds. Disable it from the sidebar or click *"Refresh now"* for an immediate update. The last refresh time appears above the table.
+## WhatsApp Notifications (Twilio)
+Set `TWILIO_SID`, `TWILIO_TOKEN`, `TWILIO_WHATSAPP_TO`, and `TWILIO_WHATSAPP_FROM` to receive WhatsApp alerts when a new pattern appears compared to the previous refresh. Alerts include asset, estimated value, UTC timestamp, and a Blockchair link.
 
-## WhatsApp Notifications:
-Configure Twilio credentials (see README) and the app will notify you on WhatsApp when a critical pattern triggers. Without configuration, external alerts are disabled.
+## Reading the Signals
+- **Super-whale:** a single massive transfer (≥$10M). It often precedes strong market moves, especially if liquidity is thin.
+- **Whale cluster:** at least three ≥$1M transfers on the same chain within 30 minutes, possibly hinting at coordinated activity or reaction to fresh news.
+- **Sudden spike:** when the number of ≥$500k transfers in the last hour far exceeds the previous hour. Expect volatility when this happens near key price levels.
 
-## Interpreting Signals:
-- **Exchange deposits:** Often precede selling pressure and possible price drops.
-- **Exchange withdrawals:** Usually indicate accumulation or storage, a potentially bullish sign.
-- **Multiple whale activity:** Several large moves close together may hint at a market event.
-- **Stablecoins:** Large flows of USDT/USDC into exchanges can signal upcoming buying; outflows can signal profit taking.
+## Limitations & Best Practices
+- Only BTC and ETH are covered.
+- Data may lag the on-chain block by a few seconds.
+- Exchange tagging is unavailable on the free Blockchair tier, so direction (deposit/withdrawal) is unknown.
+- Signals are statistical hints, **not** financial advice. Combine them with your own analysis.
 
-## Limitations:
-- Focus on transactions above $500k (smaller ones are ignored).
-- Refresh every 15s (heavy activity might still miss some data).
-- Unknown wallet owners remain unlabeled.
-- Signals are indicators, not guarantees.
+## Quick Setup
+1. Install dependencies (`pip install -r requirements.txt`).
+2. Run `streamlit run app.py`.
+3. (Optional) add Twilio WhatsApp credentials for push alerts.
+4. Adjust `AUTO_REFRESH_SECONDS` (minimum 60s) if you need a different polling interval.
 
-## Configuration:
-- Provide `WHALE_ALERT_KEY` for API access.
-- Set Twilio WhatsApp credentials for notifications.
-- Store secrets securely via environment variables or Streamlit secrets.
-
-**Happy monitoring!** Use this dashboard along with other market tools and news sources.
+Happy monitoring—and stay cautious!
 """
 
 if lang == "it":

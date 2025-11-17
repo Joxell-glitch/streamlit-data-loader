@@ -1,16 +1,27 @@
-# Whale Alert Personal Dashboard
+# Whale Monitor Dashboard
 
-This is a personal web application (Streamlit-based) that tracks large cryptocurrency transactions ("whale" transactions) for the top 5 cryptocurrencies. It highlights potential insider trading patterns to anticipate price movements. The app supports English and Italian languages.
+Personal Streamlit web-app to track large on-chain transactions ("whale" moves) for Bitcoin (BTC) and Ethereum (ETH). The dashboard highlights potential insider-like patterns so you can keep an eye on unusual activity. Interface and user guide are bilingual (Italian/English).
 
-**Features:**
-- Live monitoring of big transactions (>$500k) for BTC, ETH, USDT, BNB, USDC.
-- Alerts for unusual activity (e.g. large exchange deposits/withdrawals).
-- WhatsApp notifications for critical alerts (via Twilio API).
-- Bilingual interface (Italian/English) with an Italian user guide.
+## Features
+- Data source: [Blockchair](https://blockchair.com/api/docs) public API (free tier) for BTC and ETH transactions.
+- Live monitoring of transfers ≥ $500k (native + USD value, explorer links, coinbase flag).
+- Statistical pattern detection (super-whales ≥ $10M, whale clusters, hourly spikes).
+- WhatsApp notifications for new alerts via Twilio (optional).
+- Italian/English UI plus localized help page.
 
-**Usage:**
-- Provide your Whale Alert API key and Twilio credentials as environment variables or in `streamlit/secrets.toml`.
-- Deploy the app via Streamlit or run locally with `streamlit run app.py`.
-- Use the sidebar to switch language or open the Guide (Guida) for instructions.
+## Setup
+1. Install dependencies: `pip install -r requirements.txt`.
+2. Run locally with `streamlit run app.py`.
+3. Optional environment variables / Streamlit secrets:
+   - `TWILIO_SID`
+   - `TWILIO_TOKEN`
+   - `TWILIO_WHATSAPP_TO` (recipient number, digits only; the app prefixes `whatsapp:` automatically)
+   - `TWILIO_WHATSAPP_FROM` (defaults to the Twilio sandbox sender)
+   - `AUTO_REFRESH_SECONDS` (default 180 seconds, minimum 60 to respect Blockchair limits)
 
-*This project is for personal use. Data provided by Whale Alert API (free tier).* 
+The dashboard automatically refreshes every 3 minutes to stay within the ~1000 requests/day allowance of the free Blockchair tier. You can disable auto-refresh from the sidebar or trigger a manual reload anytime.
+
+## Notes
+- Only BTC and ETH chains are monitored.
+- Signals are statistical hints, **not** financial advice.
+- WhatsApp alerts trigger only when a new pattern is detected versus the previous refresh, to avoid duplicates.
