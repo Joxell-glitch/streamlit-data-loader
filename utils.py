@@ -8,8 +8,18 @@ def detect_gaps(df, expected_freq):
     return pd.DataFrame({"missing_timestamp": missing})
 
 def detect_duplicates(df):
-    dup = df.duplicated(subset=["timestamp"], keep=False)
-    return df[dup].copy()
+    if df is None:
+        return pd.DataFrame()
+
+    if len(df) == 0:
+        return df.copy()
+
+    if "timestamp" not in df.columns:
+        # Return an empty frame with the same columns to avoid KeyError downstream
+        return df.iloc[0:0].copy()
+
+    dup = df["timestamp"].duplicated(keep=False)
+    return df.loc[dup].copy()
 
 def basic_stats(df):
     return {

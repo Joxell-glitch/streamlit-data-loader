@@ -1,6 +1,5 @@
 import pandas as pd
 import yfinance as yf
-from datetime import datetime
 
 _YF_INTERVAL_MAP = {
     "1m": "1m",
@@ -62,13 +61,34 @@ def download_data(market_type, symbol, timeframe, start_date, end_date):
         "Volume": "volume",
     })
 
+    # Ensure we always work with an explicit timestamp column
+    data.index = pd.to_datetime(data.index, errors="coerce")
     data.index.name = "timestamp"
-    data.reset_index(inplace=True)
+    data = data.reset_index()
+    data["timestamp"] = pd.to_datetime(data["timestamp"], errors="coerce")
+    data = data.dropna(subset=["timestamp"])
+
+    numeric_cols = [col for col in ["open", "high", "low", "close", "volume"] if col in data.columns]
+    for col in numeric_cols:
+        data[col] = pd.to_numeric(data[col], errors="coerce")
+
+    # Remove rows where OHLC values could not be converted
+    data = data.dropna(subset=[col for col in ["open", "high", "low", "close"] if col in data.columns])
+
+    if "volume" not in data.columns:
+        data["volume"] = 0.0
+    else:
+        data["volume"] = data["volume"].fillna(0)
+
+    if data.empty:
+        raise ValueError("Dati non validi dopo la pulizia")
 
     if timeframe == "4h":
         data = resample_ohlcv(data, timeframe)
 
-    return data[["timestamp","open","high","low","close","volume"]]
+    data = data.sort_values("timestamp").reset_index(drop=True)
+
+    return data[["timestamp", "open", "high", "low", "close", "volume"]]
 
 def resample_ohlcv(df, timeframe):
     rule = _RESAMPLE_RULES[timeframe]
