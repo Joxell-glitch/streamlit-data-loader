@@ -1,32 +1,80 @@
-# Whale Monitor Dashboard
+# Hyperliquid Triangular Arbitrage Bot (Paper Trading)
 
-Personal Streamlit web-app to track large on-chain transactions ("whale" moves) for Bitcoin (BTC) and Ethereum (ETH). The dashboard highlights potential insider-like patterns so you can keep an eye on unusual activity. Interface and user guide are bilingual (Italian/English).
+This repository contains an asynchronous Python 3.11+ paper-trading bot for **triangular arbitrage** on **Hyperliquid spot markets**. It discovers tradable triangles, streams order books, simulates trades with realistic depth/fees, and records everything to a database. An offline analysis module evaluates performance and suggests tuning parameters.
+
+> **Important:** This project is **paper trading only**. It never sends live orders. Use it to research and rehearse before building a real execution layer.
 
 ## Features
-- Data provided exclusively by the [Blockchair](https://blockchair.com/api/docs) API (free plan). Assets covered: BTC and ETH.
-- Sidebar slider to pick the minimum USD value (100k → 10M) applied to tables, analytics, and notifications.
-- Live monitoring of high-value transfers (native + USD value, explorer links, coinbase flag).
-- Advanced pattern detection per chain: super-whales (≥$10M), 30-minute volume spikes (≥$50M USD), and 30-minute activity spikes (≥5 tx).
-- Whale flow line chart (10-minute buckets) and UTC heatmap of activity.
-- WhatsApp notifications via Twilio secrets—sent only when new patterns appear.
-- Italian/English UI plus localized help page describing the above features.
+- Async architecture with `httpx` (REST) and `websockets` (order books).
+- Configurable via YAML (`config/config.yaml`) plus environment variables loaded from `.env`.
+- Supports mainnet and testnet Hyperliquid endpoints.
+- Paper portfolio tracking with per-run IDs and DB persistence (SQLite by default, PostgreSQL optional).
+- Triangular arbitrage scanner using live orderbook depth to estimate slippage and edge.
+- Offline analysis to compute performance metrics and recommend parameter tweaks.
+- Typer-based CLI to run the bot, init the DB, measure latency, and analyze past runs.
+- GitHub Actions CI running pytest.
 
-## Data source
-- The dashboard relies solely on the Blockchair free tier for on-chain BTC and ETH data. No paid providers (e.g., Glassnode) are required.
+## Requirements
+- Python 3.11+
+- Access to the internet to reach Hyperliquid APIs (for live streaming). Offline tests use mocks.
 
-## Setup
-1. Install dependencies: `pip install -r requirements.txt`.
-2. Run locally with `streamlit run app.py`.
-3. Optional Streamlit secrets / environment variables:
-   - `TWILIO_SID`
-   - `TWILIO_TOKEN`
-   - `TWILIO_WHATSAPP_TO` (digits only; the app prefixes `whatsapp:` automatically)
-   - `TWILIO_WHATSAPP_FROM` (defaults to the Twilio sandbox sender)
-   - `AUTO_REFRESH_SECONDS` (default 180 seconds, minimum 60 to respect Blockchair limits)
+## Quick start
+1. Clone the repo and create a virtual environment:
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install --upgrade pip
+   pip install -e .
+   ```
 
-The dashboard automatically refreshes every 3 minutes to stay within the ~1000 requests/day allowance of the free Blockchair tier. You can disable auto-refresh from the sidebar or trigger a manual reload anytime.
+2. Copy the example configuration and environment files:
+   ```bash
+   cp config/config.example.yaml config/config.yaml
+   cp .env.example .env
+   ```
+   Adjust values as needed (network, DB, thresholds, filters).
 
-## Notes
-- Only BTC and ETH chains are monitored.
-- Signals (super-whales, volume spikes, activity spikes) are statistical hints, **not** financial advice.
-- WhatsApp alerts trigger only when a new pattern signature is detected versus the previous refresh.
+3. Initialize the database:
+   ```bash
+   python -m src.cli init-db --config-path config/config.yaml
+   ```
+
+4. Run the paper bot (streams order books, scans triangles, simulates trades):
+   ```bash
+   python -m src.cli run-paper-bot --config-path config/config.yaml
+   ```
+   Stop with `Ctrl+C`. A new `run_id` is generated unless provided.
+
+5. Analyze a run:
+   ```bash
+   python -m src.cli analyze-run --run-id <RUN_ID> --config-path config/config.yaml
+   ```
+   Reports are written to `analysis_output/` by default.
+
+6. Measure API latency:
+   ```bash
+   python -m src.cli measure-latency --config-path config/config.yaml
+   ```
+
+## Configuration
+- `config/config.yaml` holds defaults. Environment variables (from `.env`) override file values.
+- Example keys include network selection, quote asset, edge thresholds, position sizing, whitelists/blacklists, DB backend, and logging settings.
+- See `config/config.example.yaml` and `.env.example` for templates.
+
+## Next steps to go live
+- Implement a real order execution layer using Hyperliquid authenticated endpoints and handle signatures.
+- Add latency-sensitive routing and partial-fill management.
+- Migrate from a free VPS to a low-latency host near Hyperliquid infra (e.g., central Europe) for production arbitrage.
+
+## Project layout
+- `src/config`: configuration loader with env overrides.
+- `src/hyperliquid_client`: REST + WebSocket client.
+- `src/arb`: market graph, orderbook cache, scanner, and paper trader.
+- `src/db`: SQLAlchemy models and DB helpers.
+- `src/analysis`: metrics, tuning, reporting.
+- `src/cli.py`: Typer CLI entry point.
+- `tests/`: unit tests using synthetic data.
+- `.github/workflows/ci.yml`: CI running pytest.
+
+## Disclaimer
+This code is for research and paper trading only. Use at your own risk.

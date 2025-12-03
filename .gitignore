@@ -1,13 +1,7 @@
-# Python / Streamlit
 __pycache__/
-*.py[cod]
-*.egg-info/
+*.pyc
+.venv/
 .env
-.env.*
-.streamlit/secrets.toml
-.secrets/
-
-# OS / Editor
-.DS_Store
-.vscode/
-.idea/
+config/config.yaml
+data/
+*.sqlite
