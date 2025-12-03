@@ -1,0 +1,80 @@
+from __future__ import annotations
+
+import os
+from typing import Any, Dict
+
+import yaml
+from dotenv import load_dotenv
+
+from .models import APISettings, DatabaseSettings, LoggingSettings, Settings, TradingSettings
+
+ENV_PREFIX = ""
+
+
+def load_config(config_path: str) -> Settings:
+    """Load configuration from YAML and environment variables."""
+    load_dotenv()
+    with open(config_path, "r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f)
+
+    raw = apply_env_overrides(raw)
+
+    api = APISettings(
+        rest_base=raw["api"]["rest_base"],
+        info_path=raw["api"].get("info_path", "/info"),
+        websocket_url=raw["api"]["websocket_url"],
+        testnet_rest_base=raw["api"].get("testnet_rest_base", raw["api"]["rest_base"]),
+        testnet_websocket_url=raw["api"].get("testnet_websocket_url", raw["api"]["websocket_url"]),
+    )
+
+    trading = TradingSettings(**raw["trading"])
+
+    db = DatabaseSettings(
+        backend=raw["database"]["backend"],
+        sqlite_path=raw["database"].get("sqlite_path", "data/arb_bot.sqlite"),
+        postgres_host=raw["database"].get("postgres", {}).get("host"),
+        postgres_port=raw["database"].get("postgres", {}).get("port"),
+        postgres_user=raw["database"].get("postgres", {}).get("user"),
+        postgres_password=raw["database"].get("postgres", {}).get("password"),
+        postgres_database=raw["database"].get("postgres", {}).get("database"),
+    )
+
+    logging = LoggingSettings(**raw["logging"])
+
+    return Settings(
+        network=raw["network"],
+        api=api,
+        trading=trading,
+        database=db,
+        logging=logging,
+    )
+
+
+def apply_env_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
+    env = os.environ
+    raw["network"] = env.get("NETWORK", raw.get("network", "mainnet"))
+
+    raw.setdefault("api", {})
+    raw["api"]["rest_base"] = env.get("REST_BASE", raw["api"].get("rest_base"))
+    raw["api"]["info_path"] = env.get("INFO_PATH", raw["api"].get("info_path", "/info"))
+    raw["api"]["websocket_url"] = env.get("WEBSOCKET_URL", raw["api"].get("websocket_url"))
+    raw["api"]["testnet_rest_base"] = env.get("TESTNET_REST_BASE", raw["api"].get("testnet_rest_base", raw["api"].get("rest_base")))
+    raw["api"]["testnet_websocket_url"] = env.get("TESTNET_WEBSOCKET_URL", raw["api"].get("testnet_websocket_url", raw["api"].get("websocket_url")))
+
+    raw.setdefault("database", {})
+    raw["database"]["backend"] = env.get("DB_BACKEND", raw["database"].get("backend", "sqlite"))
+    raw["database"]["sqlite_path"] = env.get("SQLITE_PATH", raw["database"].get("sqlite_path", "data/arb_bot.sqlite"))
+    raw.setdefault("database", {}).setdefault("postgres", {})
+    pg = raw["database"]["postgres"]
+    pg["host"] = env.get("POSTGRES_HOST", pg.get("host"))
+    pg["port"] = int(env.get("POSTGRES_PORT", pg.get("port", 5432)))
+    pg["user"] = env.get("POSTGRES_USER", pg.get("user"))
+    pg["password"] = env.get("POSTGRES_PASSWORD", pg.get("password"))
+    pg["database"] = env.get("POSTGRES_DATABASE", pg.get("database"))
+
+    raw.setdefault("logging", {})
+    raw["logging"]["level"] = env.get("LOG_LEVEL", raw["logging"].get("level", "INFO"))
+    raw["logging"]["log_file"] = env.get("LOG_FILE", raw["logging"].get("log_file", "data/bot.log"))
+    raw["logging"]["console"] = str(env.get("LOG_CONSOLE", raw["logging"].get("console", "true"))).lower() in {"1", "true", "yes", "on"}
+
+    return raw

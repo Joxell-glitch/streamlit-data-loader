@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hyperliquid-triangular-arbitrage-bot"
+version = "0.1.0"
+description = "Paper trading triangular arbitrage bot for Hyperliquid spot markets"
+authors = [{name = "Your Name", email = "you@example.com"}]
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx[http2]>=0.27.0",
+    "websockets>=12.0",
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "typer>=0.12",
+    "rich>=13.7",
+    "pytest>=8.2",
+]
+
+[project.optional-dependencies]
+postgres = ["psycopg2-binary>=2.9"]
+
+[project.scripts]
+hl-arb-bot = "src.cli:app"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.typer]
+
+default_app = "src.cli:app"
