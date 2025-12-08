@@ -56,6 +56,14 @@ This repository contains an asynchronous Python 3.11+ paper-trading bot for **tr
    python -m src.cli measure-latency --config-path config/config.yaml
    ```
 
+7. Avviare la web dashboard (Next.js) per analizzare le run salvate:
+   ```bash
+   cd web-dashboard
+   npm install
+   npm run dev
+   ```
+   La dashboard legge `data/arb_bot.sqlite` e include API interne (`/api/runs`, `/api/runs/:runId`, `/api/logs`) pensate per il deploy su Vercel.
+
 ## Configuration
 - `config/config.yaml` holds defaults. Environment variables (from `.env`) override file values.
 - Example keys include network selection, quote asset, edge thresholds, position sizing, whitelists/blacklists, DB backend, and logging settings.
@@ -74,6 +82,7 @@ This repository contains an asynchronous Python 3.11+ paper-trading bot for **tr
 - `src/analysis`: metrics, tuning, reporting.
 - `src/cli.py`: Typer CLI entry point.
 - `tests/`: unit tests using synthetic data.
+- `web-dashboard/`: dashboard Next.js (deployabile su Vercel) che legge il database SQLite e mostra run, trade e log.
 - `.github/workflows/ci.yml`: CI running pytest.
 
 ## Disclaimer
