@@ -28,9 +28,7 @@ export type StatusSummary = {
   botEnabled: boolean;
 };
 
-function getApiBaseUrl() {
-  return (process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000').replace(/\/$/, '');
-}
+import { API_BASE_URL, getApiBaseUrl } from './api';
 
 async function fetchFromApi<T>(path: string, init: RequestInit = {}): Promise<T> {
   const baseUrl = getApiBaseUrl();
