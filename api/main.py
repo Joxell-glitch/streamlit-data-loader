@@ -5,16 +5,16 @@ from typing import List, Optional
 from fastapi import Depends, FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy import create_engine, func, case
+from sqlalchemy import case, create_engine, func
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.db.models import Base, PaperTrade, RunMetadata, Status
 from src.db.runtime_status import ensure_runtime_status_row, ensure_status_row, update_runtime_status
 
-DATABASE_PATH = os.getenv("DATABASE_PATH", "data/arb_bot.sqlite")
+DB_PATH = os.getenv("DB_PATH", "data/arb_bot.sqlite")
 LOG_FILE_PATH = os.getenv("LOG_FILE_PATH", "data/bot.log")
 
-engine = create_engine(f"sqlite:///{DATABASE_PATH}")
+engine = create_engine(f"sqlite:///{DB_PATH}")
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 Base.metadata.create_all(engine)
@@ -24,21 +24,17 @@ with SessionLocal() as session:
 
 app = FastAPI(title="Hyperliquid Arbitrage Bot API", openapi_url="/api/openapi.json")
 
-allowed_origins: List[str] = []
-vercel_origin = os.getenv("VERCEL_DOMAIN")
-if vercel_origin:
-    if not vercel_origin.startswith("http"):
-        vercel_origin = f"https://{vercel_origin}"
-    allowed_origins.append(vercel_origin.rstrip("/"))
-
-allowed_origins.extend(
-    ["http://localhost:3000", "http://127.0.0.1:3000"]
-)
+origins_env = os.getenv("ALLOWED_ORIGINS", "*")
+if origins_env == "*":
+    # Permette tutti gli origin in sviluppo; configurare ALLOWED_ORIGINS in produzione.
+    allowed_origins = ["*"]
+else:
+    allowed_origins = [o.strip() for o in origins_env.split(",") if o.strip()]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )

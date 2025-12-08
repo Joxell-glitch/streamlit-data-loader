@@ -56,13 +56,13 @@ This repository contains an asynchronous Python 3.11+ paper-trading bot for **tr
    python -m src.cli measure-latency --config-path config/config.yaml
    ```
 
-7. Avviare la web dashboard (Next.js) per analizzare le run salvate:
+7. Avviare la web dashboard (Next.js) per analizzare le run salvate tramite il backend FastAPI:
    ```bash
    cd web-dashboard
    npm install
-   npm run dev
+   NEXT_PUBLIC_BACKEND_URL=http://localhost:8000 npm run dev
    ```
-   La dashboard legge `data/arb_bot.sqlite` e include API interne (`/api/runs`, `/api/runs/:runId`, `/api/logs`) pensate per il deploy su Vercel.
+   La dashboard chiama sempre il backend FastAPI configurato in `NEXT_PUBLIC_BACKEND_URL` (nessun accesso diretto a file o SQLite).
 
 ## Configuration
 - `config/config.yaml` holds defaults. Environment variables (from `.env`) override file values.
@@ -74,6 +74,46 @@ This repository contains an asynchronous Python 3.11+ paper-trading bot for **tr
 - Add latency-sensitive routing and partial-fill management.
 - Migrate from a free VPS to a low-latency host near Hyperliquid infra (e.g., central Europe) for production arbitrage.
 
+## Come far funzionare la dashboard su Vercel con il backend sulla VM
+### Sul server (VM)
+1. Clonare la repo e creare l'ambiente Python:
+   ```bash
+   git clone <REPO_URL>
+   cd hyperliquid-triangular-arbitrage-bot
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install --upgrade pip
+   pip install -r requirements.txt
+   ```
+2. Creare il file `.env` (puoi partire da `.env.example`):
+   ```bash
+   cp .env.example .env
+   ```
+   Imposta almeno:
+   ```bash
+   DB_PATH=data/arb_bot.sqlite
+   ALLOWED_ORIGINS=https://<DOMAIN_VERCEL>  # usa * solo per test veloci
+   ```
+3. Avviare il backend FastAPI esponendolo sulla rete pubblica della VM:
+   ```bash
+   uvicorn api.main:app --host 0.0.0.0 --port 8000
+   ```
+4. Per tenerlo in esecuzione con tmux:
+   ```bash
+   tmux new -s hyperliquid-api
+   uvicorn api.main:app --host 0.0.0.0 --port 8000
+   # premi Ctrl+B poi D per fare detach
+   ```
+
+### Su Vercel (dashboard)
+1. Imposta il root directory a `web-dashboard`.
+2. Framework preset: **Next.js**.
+3. Build command: `npm run build`.
+4. Output directory: `.next`.
+5. Variabili d'ambiente (Production):
+   - `NEXT_PUBLIC_BACKEND_URL = http://<IP-PUBBLICO-DELLA-VM>:8000`
+6. Esegui il deploy e testa la dashboard. Se vedi errori CORS, verifica il valore di `ALLOWED_ORIGINS` nel `.env` del backend.
+
 ## Project layout
 - `src/config`: configuration loader with env overrides.
 - `src/hyperliquid_client`: REST + WebSocket client.
@@ -82,7 +122,7 @@ This repository contains an asynchronous Python 3.11+ paper-trading bot for **tr
 - `src/analysis`: metrics, tuning, reporting.
 - `src/cli.py`: Typer CLI entry point.
 - `tests/`: unit tests using synthetic data.
-- `web-dashboard/`: dashboard Next.js (deployabile su Vercel) che legge il database SQLite e mostra run, trade e log.
+- `web-dashboard/`: dashboard Next.js (deployabile su Vercel) che consuma il backend FastAPI e mostra run, trade e log.
 - `.github/workflows/ci.yml`: CI running pytest.
 
 ## Disclaimer
