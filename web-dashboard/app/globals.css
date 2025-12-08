@@ -154,6 +154,55 @@ input, select {
   overflow: auto;
 }
 
+.status-section {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.status-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  display: inline-block;
+  box-shadow: 0 0 12px rgba(0, 0, 0, 0.35);
+}
+
+.status-label {
+  font-weight: 600;
+}
+
+.status-description {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.status-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.error-text {
+  color: var(--negative);
+  font-size: 13px;
+}
+
 @media (max-width: 720px) {
   header {
     flex-direction: column;

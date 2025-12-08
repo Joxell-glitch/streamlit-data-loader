@@ -31,14 +31,17 @@ class TriangularScanner:
         self.settings = settings
         self.running = False
 
-    async def run(self, interval_ms: int, callback) -> None:
+    async def run(self, interval_ms: int, callback, stop_event: Optional[asyncio.Event] = None) -> None:
         self.running = True
-        while self.running:
+        while self.running and (not stop_event or not stop_event.is_set()):
             for triangle in self.triangles:
                 opp = self.evaluate_triangle(triangle, self.settings.min_position_size)
                 if opp and opp.theoretical_edge >= self.settings.min_edge_threshold + self.settings.safety_slippage_buffer:
                     await callback(opp)
             await asyncio.sleep(interval_ms / 1000)
+
+    def stop(self) -> None:
+        self.running = False
 
     def evaluate_triangle(self, triangle: Triangle, amount_quote: float) -> Optional[Opportunity]:
         a, b, c = triangle.assets

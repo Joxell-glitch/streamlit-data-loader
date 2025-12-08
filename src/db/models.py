@@ -60,3 +60,12 @@ class PortfolioSnapshot(Base):
     timestamp = Column(Float)
     balances = Column(JSON)
     total_value_in_quote = Column(Float)
+
+
+class RuntimeStatus(Base):
+    __tablename__ = "runtime_status"
+    id = Column(Integer, primary_key=True)
+    bot_enabled = Column(Boolean, default=True)
+    bot_running = Column(Boolean, default=False)
+    ws_connected = Column(Boolean, default=False)
+    last_heartbeat = Column(Float, nullable=True)

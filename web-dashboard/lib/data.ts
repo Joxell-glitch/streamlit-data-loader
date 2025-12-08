@@ -70,6 +70,14 @@ export type RunDetails = {
   maxDrawdown: number;
 };
 
+export type RuntimeStatus = {
+  botEnabled: boolean;
+  botRunning: boolean;
+  wsConnected: boolean;
+  dbConnected: boolean;
+  lastHeartbeat: string | null;
+};
+
 function computeMaxDrawdown(equityCurve: { equity: number }[]) {
   let peak = 0;
   let maxDrawdown = 0;
@@ -214,4 +222,36 @@ export function getRunDetails(runId: string): RunDetails {
     equityCurve,
     maxDrawdown
   };
+}
+
+export function getRuntimeStatus(): RuntimeStatus {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT bot_enabled, bot_running, ws_connected, last_heartbeat
+       FROM runtime_status WHERE id = 1`
+    )
+    .get();
+
+  if (!row) {
+    throw new Error('runtime_status row not found');
+  }
+
+  return {
+    botEnabled: Boolean(row.bot_enabled),
+    botRunning: Boolean(row.bot_running),
+    wsConnected: Boolean(row.ws_connected),
+    dbConnected: true,
+    lastHeartbeat: row.last_heartbeat ? new Date(row.last_heartbeat * 1000).toISOString() : null
+  };
+}
+
+export function setBotEnabled(enabled: boolean): RuntimeStatus {
+  const db = getDb({ writable: true });
+  db.prepare(
+    `INSERT OR IGNORE INTO runtime_status (id, bot_enabled, bot_running, ws_connected, last_heartbeat)
+     VALUES (1, 1, 0, 0, NULL)`
+  ).run();
+  db.prepare(`UPDATE runtime_status SET bot_enabled = @enabled WHERE id = 1`).run({ enabled: enabled ? 1 : 0 });
+  return getRuntimeStatus();
 }

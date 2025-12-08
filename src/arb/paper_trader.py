@@ -38,13 +38,15 @@ class PaperTrader:
         self.run_id = run_id
         self.db_session_factory = db_session_factory
         self.portfolio = default_portfolio(settings.quote_asset, settings.initial_quote_balance)
-        self._queue: asyncio.Queue[Opportunity] = asyncio.Queue()
+        self._queue: asyncio.Queue[Optional[Opportunity]] = asyncio.Queue()
         self.running = False
 
     async def start(self):
         self.running = True
         while self.running:
             opp = await self._queue.get()
+            if opp is None:
+                continue
             try:
                 await self.handle_opportunity(opp)
             except Exception as exc:  # pragma: no cover - defensive
@@ -52,6 +54,13 @@ class PaperTrader:
 
     async def enqueue(self, opp: Opportunity) -> None:
         await self._queue.put(opp)
+
+    def stop(self) -> None:
+        self.running = False
+        try:
+            self._queue.put_nowait(None)
+        except asyncio.QueueFull:  # pragma: no cover - defensive
+            pass
 
     def _enough_balance(self, required: float) -> bool:
         return self.portfolio.get(self.settings.quote_asset, 0.0) >= required

@@ -28,3 +28,10 @@ DATABASE_PATH=/path/to/arb_bot.sqlite npm run dev
 - `GET /api/runs` – elenco run con metriche aggregate.
 - `GET /api/runs/:runId` – dettaglio run, equity curve, trade e opportunità collegate.
 - `GET /api/logs` – ultime righe del log (max 200).
+- `GET /api/status` – stato runtime del bot (abilitato, running, WebSocket, heartbeat, connessione DB).
+- `POST /api/status/bot-enabled` – abilita/disabilita il bot aggiornando il flag nel DB.
+
+## Stato sistema e toggle bot
+- La tabella `runtime_status` nel DB traccia `bot_enabled`, `bot_running`, `ws_connected` e `last_heartbeat`.
+- La dashboard legge questi valori via API e mostra tre indicatori (bot, WebSocket, DB).
+- Il toggle “Bot abilitato” aggiorna solo il flag `bot_enabled`: se disattivato, il bot si spegne in modo pulito al prossimo check ma NON viene riavviato automaticamente (riavvio manuale via CLI/SSH).

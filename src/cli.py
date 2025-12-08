@@ -10,7 +10,8 @@ import typer
 from src.analysis.report import generate_report
 from src.config.loader import load_config
 from src.core.logging import setup_logging, get_logger
-from src.db.session import init_db
+from src.db.session import get_session, init_db
+from src.db.runtime_status import get_runtime_status, update_runtime_status
 from src.hyperliquid_client.client import HyperliquidClient
 from src.arb.market_graph import MarketGraph
 from src.arb.orderbook_cache import OrderbookCache
@@ -60,25 +61,82 @@ def run_paper_bot(config_path: str = typer.Option("config/config.yaml"), run_id:
         market_graph = MarketGraph(settings)
         spot_meta = await client.fetch_spot_meta()
         market_graph.build_from_spot_meta(spot_meta)
-        await client.connect_ws()
-        await client.subscribe_orderbooks([e.quote for e in market_graph.edges if e.base == settings.trading.quote_asset])
+        session_factory = get_session(settings)
 
-        trader = PaperTrader(orderbooks, settings.trading, run_id)
+        def _update_status(**fields):
+            session = session_factory()
+            with session as s:
+                update_runtime_status(s, **fields)
+
+        def _get_status():
+            session = session_factory()
+            with session as s:
+                return get_runtime_status(s)
+
+        _update_status(bot_running=True, ws_connected=False, last_heartbeat=time.time())
+
+        stop_event = asyncio.Event()
+
+        trader = PaperTrader(orderbooks, settings.trading, run_id, db_session_factory=session_factory)
         scanner = TriangularScanner(market_graph.triangles, orderbooks, settings.trading)
 
         async def ws_listener():
-            async for msg in client.ws_messages():
-                if msg.get("type") == "l2Book":
-                    coin = msg.get("coin")
-                    pair = f"{settings.trading.quote_asset}/{coin}"
-                    bids = msg.get("levels", {}).get("bids", [])
-                    asks = msg.get("levels", {}).get("asks", [])
-                    orderbooks.apply_snapshot(pair, bids, asks)
+            backoff = 1
+            while not stop_event.is_set():
+                try:
+                    await client.connect_ws()
+                    backoff = 1
+                    _update_status(ws_connected=True)
+                    await client.subscribe_orderbooks([e.quote for e in market_graph.edges if e.base == settings.trading.quote_asset])
+
+                    async for msg in client.ws_messages():
+                        if stop_event.is_set():
+                            break
+                        if msg.get("type") == "l2Book":
+                            coin = msg.get("coin")
+                            pair = f"{settings.trading.quote_asset}/{coin}"
+                            bids = msg.get("levels", {}).get("bids", [])
+                            asks = msg.get("levels", {}).get("asks", [])
+                            orderbooks.apply_snapshot(pair, bids, asks)
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.warning("WebSocket listener error: %s", exc)
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 30)
+                finally:
+                    _update_status(ws_connected=False)
 
         async def scanner_task():
-            await scanner.run(500, trader.enqueue)
+            await scanner.run(500, trader.enqueue, stop_event=stop_event)
 
-        await asyncio.gather(trader.start(), ws_listener(), scanner_task())
+        async def heartbeat_task():
+            while not stop_event.is_set():
+                status = _get_status()
+                if status and not status.bot_enabled:
+                    logger.info("Bot disabled via runtime_status, shutting down")
+                    stop_event.set()
+                    break
+                _update_status(bot_running=True, last_heartbeat=time.time())
+                await asyncio.sleep(5)
+
+        tasks = [
+            asyncio.create_task(trader.start()),
+            asyncio.create_task(ws_listener()),
+            asyncio.create_task(scanner_task()),
+            asyncio.create_task(heartbeat_task()),
+        ]
+
+        try:
+            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            stop_event.set()
+            scanner.stop()
+            trader.stop()
+            await client.close()
+            _update_status(bot_running=False, ws_connected=False, last_heartbeat=time.time())
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     asyncio.run(_run())
 
