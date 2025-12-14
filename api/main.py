@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import case, create_engine, func
 from sqlalchemy.orm import Session, sessionmaker
 
+from src.arb.profit_persistence import load_recent_profitable, load_top_per_hour
 from src.db.models import Base, PaperTrade, RunMetadata, Status
 from src.db.runtime_status import ensure_runtime_status_row, ensure_status_row, update_runtime_status
 
@@ -80,6 +81,21 @@ class TradeResponse(BaseModel):
 
 class LogsResponse(BaseModel):
     lines: List[str]
+
+
+class ProfitableResponse(BaseModel):
+    timestamp: str
+    triangle: dict
+    initial_size: float
+    theoretical_final_amount: float
+    profit_absolute: float
+    profit_percent: float
+    slippage: List[float]
+
+
+class TopPerHourItem(BaseModel):
+    hour: str
+    records: List[ProfitableResponse]
 
 
 @app.get("/api/status", response_model=StatusResponse)
@@ -201,6 +217,16 @@ def get_logs():
 
     recent = lines[-500:]
     return LogsResponse(lines=[line.rstrip("\n") for line in recent])
+
+
+@app.get("/api/profitable", response_model=List[ProfitableResponse])
+def get_profitable(limit: int = Query(default=200, gt=0, le=1000)):
+    return load_recent_profitable(limit)
+
+
+@app.get("/api/top-per-hour", response_model=List[TopPerHourItem])
+def get_top_per_hour(hours: int = Query(default=24, gt=0, le=168)):
+    return load_top_per_hour(hours)
 
 
 @app.get("/api/status/ping", response_model=StatusResponse)
