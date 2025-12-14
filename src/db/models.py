@@ -33,6 +33,25 @@ class Opportunity(Base):
     parameters_snapshot = Column(JSON)
 
 
+class TriangularOpportunity(Base):
+    __tablename__ = "triangular_opportunities"
+    id = Column(Integer, primary_key=True)
+    triangle_id = Column(Integer, index=True)
+    timestamp = Column(String)
+    timestamp_unix = Column(Float, index=True)
+    asset_a = Column(String)
+    asset_b = Column(String)
+    asset_c = Column(String)
+    price_leg1 = Column(Float)
+    price_leg2 = Column(Float)
+    price_leg3 = Column(Float)
+    initial_size = Column(Float)
+    theoretical_final_amount = Column(Float)
+    theoretical_edge = Column(Float)
+    profit_absolute = Column(Float)
+    profit_percent = Column(Float)
+
+
 class PaperTrade(Base):
     __tablename__ = "paper_trades"
     id = Column(Integer, primary_key=True)

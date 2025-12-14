@@ -26,6 +26,7 @@ class TradingSettings:
     blacklist: List[str] = field(default_factory=list)
     min_average_volume: float = 0.0
     max_spread_pct: float = 1.0
+    top_n_opportunities: int = 20
 
 
 @dataclass

@@ -22,6 +22,9 @@ class Opportunity:
     theoretical_final_amount: float
     theoretical_edge: float
     slippage: Tuple[float, float, float]
+    prices: Tuple[float, float, float]
+    profit_absolute: float
+    profit_percent: float
 
 
 class TriangularScanner:
@@ -34,10 +37,15 @@ class TriangularScanner:
     async def run(self, interval_ms: int, callback, stop_event: Optional[asyncio.Event] = None) -> None:
         self.running = True
         while self.running and (not stop_event or not stop_event.is_set()):
+            profitable: List[Opportunity] = []
             for triangle in self.triangles:
                 opp = self.evaluate_triangle(triangle, self.settings.min_position_size)
                 if opp and opp.theoretical_edge >= self.settings.min_edge_threshold + self.settings.safety_slippage_buffer:
-                    await callback(opp)
+                    if opp.profit_absolute > 0:
+                        profitable.append(opp)
+            profitable.sort(key=lambda o: o.profit_absolute, reverse=True)
+            for opp in profitable[: self.settings.top_n_opportunities]:
+                await callback(opp)
             await asyncio.sleep(interval_ms / 1000)
 
     def stop(self) -> None:
@@ -67,6 +75,7 @@ class TriangularScanner:
         final_amount = amount_c * price3
 
         edge = (final_amount / amount_quote) - 1
+        profit_absolute = final_amount - amount_quote
         return Opportunity(
             triangle_id=triangle.id,
             assets=triangle.assets,
@@ -75,4 +84,7 @@ class TriangularScanner:
             theoretical_final_amount=final_amount,
             theoretical_edge=edge,
             slippage=(sl1, sl2, sl3),
+            prices=(price1, price2, price3),
+            profit_absolute=profit_absolute,
+            profit_percent=edge * 100,
         )

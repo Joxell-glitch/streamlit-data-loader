@@ -62,8 +62,8 @@ def run_paper_bot(config_path: str = typer.Option("config/config.yaml"), run_id:
         market_graph = MarketGraph(settings)
         spot_meta = await client.fetch_spot_meta()
         market_graph.build_from_spot_meta(spot_meta)
-        profit_recorder = ProfitRecorder()
         session_factory = get_session(settings)
+        profit_recorder = ProfitRecorder(db_session_factory=session_factory)
 
         def _update_status(**fields):
             session = session_factory()

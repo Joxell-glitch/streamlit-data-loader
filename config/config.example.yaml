@@ -14,6 +14,7 @@ trading:
   min_edge_threshold: 0.001
   safety_slippage_buffer: 0.0005
   max_concurrent_triangles: 5
+  top_n_opportunities: 20
   whitelist: []
   blacklist: []
   min_average_volume: 0
