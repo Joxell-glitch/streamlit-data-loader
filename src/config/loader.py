@@ -6,7 +6,14 @@ from typing import Any, Dict
 import yaml
 from dotenv import load_dotenv
 
-from .models import APISettings, DatabaseSettings, LoggingSettings, Settings, TradingSettings
+from .models import (
+    APISettings,
+    DatabaseSettings,
+    LoggingSettings,
+    ObservabilitySettings,
+    Settings,
+    TradingSettings,
+)
 
 ENV_PREFIX = ""
 
@@ -41,12 +48,15 @@ def load_config(config_path: str) -> Settings:
 
     logging = LoggingSettings(**raw["logging"])
 
+    observability = ObservabilitySettings(**raw.get("observability", {}))
+
     return Settings(
         network=raw["network"],
         api=api,
         trading=trading,
         database=db,
         logging=logging,
+        observability=observability,
     )
 
 
@@ -76,5 +86,14 @@ def apply_env_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
     raw["logging"]["level"] = env.get("LOG_LEVEL", raw["logging"].get("level", "INFO"))
     raw["logging"]["log_file"] = env.get("LOG_FILE", raw["logging"].get("log_file", "data/bot.log"))
     raw["logging"]["console"] = str(env.get("LOG_CONSOLE", raw["logging"].get("console", "true"))).lower() in {"1", "true", "yes", "on"}
+
+    raw.setdefault("observability", {})
+    raw["observability"]["log_top_n_each_sec"] = int(
+        env.get("OBS_LOG_TOP_N_EACH_SEC", raw["observability"].get("log_top_n_each_sec", 60))
+    )
+    raw["observability"]["top_n"] = int(env.get("OBS_TOP_N", raw["observability"].get("top_n", 10)))
+    raw["observability"]["min_abs_profit_to_log"] = float(
+        env.get("OBS_MIN_ABS_PROFIT_TO_LOG", raw["observability"].get("min_abs_profit_to_log", 0.0))
+    )
 
     return raw

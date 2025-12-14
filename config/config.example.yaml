@@ -34,3 +34,8 @@ logging:
   level: INFO
   log_file: "data/bot.log"
   console: true
+
+observability:
+  log_top_n_each_sec: 60
+  top_n: 10
+  min_abs_profit_to_log: 0.0

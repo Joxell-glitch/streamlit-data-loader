@@ -79,7 +79,9 @@ def run_paper_bot_command(config_path: str = "config/config.yaml", run_id: Optio
         stop_event = asyncio.Event()
 
         trader = PaperTrader(orderbooks, settings.trading, run_id, db_session_factory=session_factory)
-        scanner = TriangularScanner(market_graph.triangles, orderbooks, settings.trading)
+        scanner = TriangularScanner(
+            market_graph.triangles, orderbooks, settings.trading, settings.observability
+        )
 
         async def ws_listener():
             backoff = 1

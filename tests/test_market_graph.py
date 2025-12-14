@@ -1,5 +1,12 @@
 from src.arb.market_graph import MarketGraph
-from src.config.models import Settings, APISettings, TradingSettings, DatabaseSettings, LoggingSettings
+from src.config.models import (
+    APISettings,
+    DatabaseSettings,
+    LoggingSettings,
+    ObservabilitySettings,
+    Settings,
+    TradingSettings,
+)
 
 
 def make_settings():
@@ -17,6 +24,7 @@ def make_settings():
         ),
         database=DatabaseSettings(backend="sqlite", sqlite_path=":memory:"),
         logging=LoggingSettings(level="INFO", log_file="/tmp/test.log"),
+        observability=ObservabilitySettings(),
     )
 
 
