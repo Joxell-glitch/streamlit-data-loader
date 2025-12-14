@@ -17,6 +17,7 @@ from src.arb.market_graph import MarketGraph
 from src.arb.orderbook_cache import OrderbookCache
 from src.arb.triangular_scanner import TriangularScanner
 from src.arb.paper_trader import PaperTrader
+from src.arb.profit_persistence import ProfitRecorder
 
 app = typer.Typer(add_completion=False)
 logger = get_logger(__name__)
@@ -61,6 +62,7 @@ def run_paper_bot(config_path: str = typer.Option("config/config.yaml"), run_id:
         market_graph = MarketGraph(settings)
         spot_meta = await client.fetch_spot_meta()
         market_graph.build_from_spot_meta(spot_meta)
+        profit_recorder = ProfitRecorder()
         session_factory = get_session(settings)
 
         def _update_status(**fields):
@@ -106,7 +108,11 @@ def run_paper_bot(config_path: str = typer.Option("config/config.yaml"), run_id:
                     _update_status(ws_connected=False)
 
         async def scanner_task():
-            await scanner.run(500, trader.enqueue, stop_event=stop_event)
+            async def _handle_profitable(opp):
+                await profit_recorder.record_opportunity_async(opp)
+                await trader.enqueue(opp)
+
+            await scanner.run(500, _handle_profitable, stop_event=stop_event)
 
         async def heartbeat_task():
             while not stop_event.is_set():
