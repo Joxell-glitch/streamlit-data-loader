@@ -11,7 +11,7 @@ from sqlalchemy.orm import sessionmaker
 
 from src.arb.triangular_scanner import Opportunity
 from src.core.logging import get_logger
-from src.db.models import Base, TriangularOpportunity
+from src.db.models import Base, ProfitOpportunity, TriangularOpportunity
 
 logger = get_logger(__name__)
 
@@ -34,6 +34,28 @@ def _build_session_factory(db_path: str):
             session.close()
 
     return session_scope
+
+
+def _save_profit(session_factory, opportunity: Opportunity) -> None:
+    ts = datetime.fromtimestamp(opportunity.timestamp).replace(microsecond=0)
+    with session_factory() as session:
+        session.add(
+            ProfitOpportunity(
+                triangle_id=opportunity.triangle_id,
+                profit=opportunity.profit_absolute,
+                timestamp=ts,
+            )
+        )
+        session.commit()
+
+
+async def save_profit_opportunity_async(session_factory, opportunity: Opportunity) -> None:
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _save_profit, session_factory, opportunity)
+
+
+def save_profit_opportunity(session_factory, opportunity: Opportunity) -> None:
+    _save_profit(session_factory, opportunity)
 
 
 def _row_to_payload(row: TriangularOpportunity) -> Dict:

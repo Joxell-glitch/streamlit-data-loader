@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, Float, Integer, String, JSON
+from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, JSON
 from sqlalchemy.orm import declarative_base
 
 
@@ -98,3 +98,11 @@ class Status(Base):
     ws_connected = Column(Boolean, default=False)
     dashboard_connected = Column(Boolean, default=False)
     last_heartbeat = Column(Float, nullable=True)
+
+
+class ProfitOpportunity(Base):
+    __tablename__ = "profit_opportunities"
+    id = Column(Integer, primary_key=True)
+    triangle_id = Column(Integer, index=True)
+    profit = Column(Float)
+    timestamp = Column(DateTime)
