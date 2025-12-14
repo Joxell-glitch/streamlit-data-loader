@@ -37,6 +37,7 @@ class MarketGraph:
         quote_asset = self.settings.trading.quote_asset
         whitelist = set(a.upper() for a in self.settings.trading.whitelist)
         blacklist = set(a.upper() for a in self.settings.trading.blacklist)
+        is_hyperliquid = "hyperliquid" in (getattr(self.settings.api, "rest_base", "") or "").lower()
 
         markets_total = len(pairs)
         markets_active = sum(1 for entry in pairs if entry.get("enabled", True))
@@ -46,21 +47,32 @@ class MarketGraph:
         used_pairs = set()
 
         for entry in pairs:
-            base = entry.get("base") or entry.get("coin")
-            quote = entry.get("quote") or quote_asset
-            if not base:
-                skipped_missing_base += 1
-                continue
-            base = base.upper()
-            quote = quote.upper()
-            if whitelist and base not in whitelist and quote not in whitelist:
-                skipped_whitelist += 1
-                continue
+            pair_name = entry.get("pair")
+            if is_hyperliquid:
+                symbol = entry.get("name") or entry.get("coin") or entry.get("base") or entry.get("symbol") or entry.get("pair")
+                if not symbol:
+                    skipped_missing_base += 1
+                    continue
+                base = symbol.upper()
+                quote = quote_asset.upper()
+            else:
+                base = entry.get("base") or entry.get("coin")
+                quote = entry.get("quote") or quote_asset
+                if not base:
+                    skipped_missing_base += 1
+                    continue
+                base = base.upper()
+                quote = quote.upper()
+                if whitelist and base not in whitelist and quote not in whitelist:
+                    skipped_whitelist += 1
+                    continue
             if base in blacklist or quote in blacklist:
                 skipped_blacklist += 1
                 continue
-            pair_name = entry.get("pair") or f"{base}/{quote}"
+            pair_name = pair_name or f"{base}/{quote}"
             used_pairs.add(pair_name)
+            if is_hyperliquid:
+                logger.info("[GRAPH][INFO] hyperliquid_market accepted base=%s quote=%s", base, quote)
             self.edges.append(Edge(base=base, quote=quote, pair=pair_name))
             self.edges.append(Edge(base=quote, quote=base, pair=pair_name))
 
