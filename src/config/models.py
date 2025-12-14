@@ -48,9 +48,17 @@ class LoggingSettings:
 
 
 @dataclass
+class ObservabilitySettings:
+    log_top_n_each_sec: int = 60
+    top_n: int = 10
+    min_abs_profit_to_log: float = 0.0
+
+
+@dataclass
 class Settings:
     network: str
     api: APISettings
     trading: TradingSettings
     database: DatabaseSettings
     logging: LoggingSettings
+    observability: ObservabilitySettings
