@@ -17,7 +17,7 @@ from src.arb.market_graph import MarketGraph
 from src.arb.orderbook_cache import OrderbookCache
 from src.arb.triangular_scanner import TriangularScanner
 from src.arb.paper_trader import PaperTrader
-from src.arb.profit_persistence import ProfitRecorder
+from src.arb.profit_persistence import ProfitRecorder, save_profit_opportunity_async
 
 app = typer.Typer(add_completion=False)
 logger = get_logger(__name__)
@@ -52,6 +52,7 @@ def measure_latency(config_path: str = typer.Option("config/config.yaml")):
 def run_paper_bot_command(config_path: str = "config/config.yaml", run_id: Optional[str] = None):
     settings = load_config(config_path)
     setup_logging(settings.logging)
+    init_db(settings)
     run_id = run_id or str(uuid.uuid4())
     typer.echo(f"Starting run {run_id}")
 
@@ -110,6 +111,7 @@ def run_paper_bot_command(config_path: str = "config/config.yaml", run_id: Optio
 
         async def scanner_task():
             async def _handle_profitable(opp):
+                await save_profit_opportunity_async(session_factory, opp)
                 await profit_recorder.record_opportunity_async(opp)
                 await trader.enqueue(opp)
 
