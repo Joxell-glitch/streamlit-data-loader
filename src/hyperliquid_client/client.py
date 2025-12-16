@@ -111,9 +111,8 @@ class HyperliquidClient:
         coins_list = list(coins)
         for coin in coins_list:
             sub_payload: Dict[str, Any] = {"type": "l2Book", "coin": coin}
-            sub_key = ("l2Book", coin, kind == "perp")
+            sub_key = ("l2Book", coin, kind)
             if kind == "perp":
-                sub_payload["perp"] = True
                 self._perp_subscriptions.add(coin)
             else:
                 self._spot_subscriptions.add(coin)
@@ -156,9 +155,7 @@ class HyperliquidClient:
                 await asyncio.wait_for(self._first_data_event.wait(), timeout=3)
             except asyncio.TimeoutError:
                 logger.info("[WS_FEED][INFO] first_data_wait_timeout sending l2Book subscribe")
-            spot_pairs = [f"{coin}/USDC" for coin in coins_spot]
-            await self.subscribe_orderbooks(spot_pairs, kind="spot")
-            await self.subscribe_orderbooks(coins_perp, kind="perp")
+            await self.subscribe_orderbooks(["BTC"], kind="spot")
 
         asyncio.create_task(_delayed_l2book_subscribe())
 
@@ -297,10 +294,6 @@ class HyperliquidClient:
             logger.debug("[WS_FEED][DEBUG] l2Book without coin: %s", msg)
             return
 
-        if not self._first_l2book_logged:
-            self._first_l2book_logged = True
-            logger.info("[WS_FEED][INFO] first_l2book_received coin=%s", coin)
-
         levels = payload.get("levels") or payload
         bids = levels.get("bids") if isinstance(levels, dict) else None
         asks = levels.get("asks") if isinstance(levels, dict) else None
@@ -320,12 +313,13 @@ class HyperliquidClient:
 
         norm = {"bid": best_bid, "ask": best_ask, "bids": bids, "asks": asks, "ts": ts}
 
-        if isinstance(coin, str) and "/USDC" in coin:
-            kind = "spot"
-            asset = coin.split("/")[0]
-        else:
-            kind = "perp"
-            asset = coin
+        if not self._first_l2book_logged:
+            self._first_l2book_logged = True
+            logger.info(
+                "[WS_FEED][INFO] first_l2book_received coin=%s bid=%s ask=%s", coin, best_bid, best_ask
+            )
+
+        kind, asset = self._detect_kind(payload, msg, coin)
 
         if kind == "perp":
             self._orderbooks_perp[asset] = norm
