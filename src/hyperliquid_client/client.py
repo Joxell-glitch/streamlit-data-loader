@@ -45,13 +45,15 @@ class HyperliquidClient:
         self._spot_subscriptions: set[str] = set()
         self._perp_subscriptions: set[str] = set()
         self._mark_subscriptions: set[str] = set()
-        self._sent_subscriptions: set[tuple] = set()
+        self._sent_subscriptions: set[object] = set()
         self._all_mids_subscribed = False
         self._raw_sample_logged = 0
         self._first_market_logged = False
         self._first_data_logged = False
         self._first_l2book_logged = False
         self._first_allmids_logged = False
+        self._mark_first_logged: set[str] = set()
+        self._mark_ok: Dict[str, bool] = {}
         self._first_data_event = asyncio.Event()
 
     @property
@@ -138,11 +140,16 @@ class HyperliquidClient:
         if not self._ws:
             raise RuntimeError("WebSocket not connected")
         for coin, base in symbol_map.items():
-            if coin in self._mark_subscriptions:
+            sub_payload = {"type": "activeAssetCtx", "coin": coin}
+            sub_key = json.dumps(sub_payload, sort_keys=True)
+            if sub_key in self._sent_subscriptions:
+                logger.info("Already subscribed (activeAssetCtx %s)", coin)
                 continue
-            self._mark_subscriptions.add(coin)
+
+            self._mark_subscriptions.add(sub_key)
             self._mark_symbol_to_base[coin] = base
-            await self._send_subscribe({"type": "markPrice", "coin": coin, "isPerp": True})
+            await self._send_subscribe(sub_payload)
+            self._sent_subscriptions.add(sub_key)
             await asyncio.sleep(0.2)
 
     async def start_market_data(
@@ -162,9 +169,11 @@ class HyperliquidClient:
         await self.connect_ws()
         if not self._recv_task or self._recv_task.done():
             self._recv_task = asyncio.create_task(self._ws_recv_loop())
-        # Mark price subscription disabled: Hyperliquid does not expose markPrice over WS.
         await self.subscribe_orderbooks(spot_symbols, kind="spot")
         await self.subscribe_orderbooks(perp_symbols, kind="perp")
+        if coins_mark_list:
+            mark_symbols = {self._normalize_perp_symbol(base): base for base in coins_mark_list}
+            await self.subscribe_mark_prices(mark_symbols)
 
     async def _ws_recv_loop(self) -> None:
         sample_limit = 5
@@ -267,12 +276,15 @@ class HyperliquidClient:
         return False
 
     def _is_mark_price(self, msg: Dict[str, Any]) -> bool:
-        if msg.get("channel") in {"markPrice", "mark"}:
+        if msg.get("channel") in {"activeAssetCtx"}:
             return True
-        if msg.get("type") == "markPrice":
+        if msg.get("type") in {"markPrice", "activeAssetCtx"}:
+            return True
+        subscription = msg.get("subscription") or {}
+        if isinstance(subscription, dict) and subscription.get("type") == "activeAssetCtx":
             return True
         data = msg.get("data") or msg.get("result")
-        if isinstance(data, dict) and data.get("type") == "markPrice":
+        if isinstance(data, dict) and data.get("type") in {"markPrice", "activeAssetCtx"}:
             return True
         return False
 
@@ -365,6 +377,11 @@ class HyperliquidClient:
             base = coin.split("/")[0] if isinstance(coin, str) and "/" in coin else coin
         self._marks[base] = mark
 
+        if base not in self._mark_first_logged:
+            self._mark_first_logged.add(base)
+            logger.info("[WS_FEED][INFO] first_mark_received asset=%s", base)
+        self._mark_ok[base] = True
+
         for cb in self._mark_listeners:
             try:
                 cb(base, mark, payload)
@@ -399,7 +416,7 @@ class HyperliquidClient:
             self._mids_map[coin] = mid
 
         now = time.time()
-        targets = self._tracked_bases or self._mark_subscriptions
+        targets = self._tracked_bases or set(self._mark_symbol_to_base.values())
         for base in targets:
             mid = None
             source_symbol = None
