@@ -108,7 +108,8 @@ class SpotPerpPaperEngine:
         ts = ob_norm.get("ts") or time.time()
         if kind == "perp":
             self.asset_state[coin].perp = book
-            self.update_counts[coin]["perp"] += 1
+            if book.has_liquidity():
+                self.update_counts[coin]["perp"] += 1
             if ts - self._last_update_log[coin]["perp"] >= 1:
                 self._last_update_log[coin]["perp"] = ts
                 logger.debug(
@@ -120,7 +121,8 @@ class SpotPerpPaperEngine:
                 )
         else:
             self.asset_state[coin].spot = book
-            self.update_counts[coin]["spot"] += 1
+            if book.has_liquidity():
+                self.update_counts[coin]["spot"] += 1
             if ts - self._last_update_log[coin]["spot"] >= 1:
                 self._last_update_log[coin]["spot"] = ts
                 logger.debug(
