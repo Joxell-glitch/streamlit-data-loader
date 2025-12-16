@@ -56,6 +56,7 @@ class HyperliquidClient:
         self._mark_ok: Dict[str, bool] = {}
         self._first_data_event = asyncio.Event()
         self._heartbeat_task: Optional[asyncio.Task] = None
+        self._logger = logger
 
     @property
     def rest_base(self) -> str:
@@ -104,7 +105,9 @@ class HyperliquidClient:
                     self._ws = await websockets.connect(self.websocket_url, ping_interval=20)
                     self._connected_event.set()
                     logger.info("WebSocket connected")
+                    self._logger.info("[WS_FEED] creating heartbeat task")
                     self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+                    self._logger.info("[WS_FEED] heartbeat task created task=%s", self._heartbeat_task)
                     return
                 except Exception as exc:  # pragma: no cover - defensive
                     logger.warning("WebSocket connection failed: %s", exc)
@@ -178,14 +181,58 @@ class HyperliquidClient:
 
     async def _heartbeat_loop(self) -> None:
         try:
+            self._logger.info("[WS_FEED] heartbeat loop started")
             while self._ws and not self._ws.closed:
                 await asyncio.sleep(25)
                 if not self._ws or self._ws.closed:
                     break
-                logger.info("[WS_FEED] sending ping")
-                await self._ws.send(json.dumps({"method": "ping"}))
+                ping_payload = {"method": "ping"}
+                self._logger.info("[WS_FEED] sending ping payload=%s", ping_payload)
+                await self._ws.send(json.dumps(ping_payload))
+                self._logger.info("[WS_FEED] ping sent")
         except asyncio.CancelledError:
+            self._logger.info("[WS_FEED] heartbeat loop cancelled")
+            raise
+        except Exception:  # pragma: no cover - defensive
+            self._logger.exception("[WS_FEED] heartbeat loop error")
+
+    def _handle_ws_message(self, msg: Dict[str, Any]) -> None:
+        if msg.get("channel") == "pong":
+            self._logger.info("[WS_FEED] received pong")
             return
+
+        if msg.get("channel") == "error" or msg.get("type") == "error":
+            logger.error("[WS_FEED][ERROR] subscribe_error msg=%s", msg)
+            return
+
+        if not self._first_data_logged:
+            self._first_data_logged = True
+            channel = msg.get("channel") or msg.get("type") or "unknown"
+            logger.info("[WS_FEED][INFO] first_data_received channel=%s", channel)
+            self._first_data_event.set()
+
+        if msg.get("channel") == "subscriptionResponse" or msg.get("type") == "subscriptionResponse":
+            logger.info("[WS_FEED][INFO] subscriptionResponse msg=%s", msg)
+            return
+
+        handled = False
+        if self._is_l2book(msg):
+            handled = True
+            self._handle_l2book(msg)
+        if self._is_mark_price(msg):
+            handled = True
+            self._handle_mark(msg)
+        if self._is_all_mids(msg):
+            handled = True
+            self._handle_all_mids(msg)
+
+        if handled and not self._first_market_logged:
+            self._first_market_logged = True
+            channel = msg.get("channel") or msg.get("type") or "unknown"
+            logger.info("[WS_FEED][INFO] first_market_msg channel=%s keys=%s", channel, list(msg.keys()))
+
+        if not handled:
+            logger.debug("[WS_FEED][DEBUG] Unrecognized message: %s", msg)
 
     async def _ws_recv_loop(self) -> None:
         sample_limit = 5
@@ -210,24 +257,6 @@ class HyperliquidClient:
                 if msg is None:
                     continue
 
-                if msg.get("channel") == "pong":
-                    logger.info("[WS_FEED] received pong")
-                    continue
-
-                if msg.get("channel") == "error" or msg.get("type") == "error":
-                    logger.error("[WS_FEED][ERROR] subscribe_error msg=%s", msg)
-                    continue
-
-                if not self._first_data_logged:
-                    self._first_data_logged = True
-                    channel = msg.get("channel") or msg.get("type") or "unknown"
-                    logger.info("[WS_FEED][INFO] first_data_received channel=%s", channel)
-                    self._first_data_event.set()
-
-                if msg.get("channel") == "subscriptionResponse" or msg.get("type") == "subscriptionResponse":
-                    logger.info("[WS_FEED][INFO] subscriptionResponse msg=%s", msg)
-                    continue
-
                 if self._raw_sample_logged < sample_limit:
                     self._raw_sample_logged += 1
                     try:
@@ -239,25 +268,7 @@ class HyperliquidClient:
                         list(msg.keys()),
                         snippet[:500],
                     )
-
-                handled = False
-                if self._is_l2book(msg):
-                    handled = True
-                    self._handle_l2book(msg)
-                if self._is_mark_price(msg):
-                    handled = True
-                    self._handle_mark(msg)
-                if self._is_all_mids(msg):
-                    handled = True
-                    self._handle_all_mids(msg)
-
-                if handled and not self._first_market_logged:
-                    self._first_market_logged = True
-                    channel = msg.get("channel") or msg.get("type") or "unknown"
-                    logger.info("[WS_FEED][INFO] first_market_msg channel=%s keys=%s", channel, list(msg.keys()))
-
-                if not handled:
-                    logger.debug("[WS_FEED][DEBUG] Unrecognized message: %s", msg)
+                self._handle_ws_message(msg)
         finally:
             if self._heartbeat_task:
                 self._heartbeat_task.cancel()
