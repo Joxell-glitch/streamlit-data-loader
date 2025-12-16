@@ -38,6 +38,7 @@ class HyperliquidClient:
         self._spot_subscriptions: set[str] = set()
         self._perp_subscriptions: set[str] = set()
         self._mark_subscriptions: set[str] = set()
+        self._all_mids_subscribed = False
         self._raw_sample_logged = 0
         self._first_market_logged = False
 
@@ -103,15 +104,11 @@ class HyperliquidClient:
             self._perp_subscriptions.update(coins_list)
         else:
             self._spot_subscriptions.update(coins_list)
-        sub = {
-            "method": "subscribe",
-            "subscriptions": [
-                {"type": "l2Book", "coin": coin, **({"perp": True} if kind == "perp" else {})}
-                for coin in coins_list
-            ],
-        }
-        logger.info("[WS_FEED][INFO] sending_subscribe payload=%s", json.dumps(sub))
-        await self._ws.send(json.dumps(sub))
+        for coin in coins_list:
+            coin_symbol = f"{coin}/USDC" if kind != "perp" else coin
+            sub = {"method": "subscribe", "subscription": {"type": "l2Book", "coin": coin_symbol}}
+            logger.info("[WS_FEED][INFO] sending_subscribe payload=%s", json.dumps(sub))
+            await self._ws.send(json.dumps(sub))
 
     async def subscribe_mark_prices(self, coins: Iterable[str]) -> None:
         await self._connected_event.wait()
@@ -119,12 +116,12 @@ class HyperliquidClient:
             raise RuntimeError("WebSocket not connected")
         coins_list = list(coins)
         self._mark_subscriptions.update(coins_list)
-        sub = {
-            "method": "subscribe",
-            "subscriptions": [{"type": "markPrice", "coin": coin} for coin in coins_list],
-        }
+        if self._all_mids_subscribed:
+            return
+        sub = {"method": "subscribe", "subscription": {"type": "allMids"}}
         logger.info("[WS_FEED][INFO] sending_subscribe payload=%s", json.dumps(sub))
         await self._ws.send(json.dumps(sub))
+        self._all_mids_subscribed = True
 
     async def start_market_data(
         self,
@@ -140,6 +137,8 @@ class HyperliquidClient:
             self._recv_task = asyncio.create_task(self._ws_recv_loop())
 
     async def _resubscribe_all(self) -> None:
+        # Reset one-shot markers when recovering from a disconnect
+        self._all_mids_subscribed = False
         if self._spot_subscriptions:
             await self.subscribe_orderbooks(self._spot_subscriptions, kind="spot")
         if self._perp_subscriptions:
@@ -175,6 +174,10 @@ class HyperliquidClient:
                 logger.error("[WS_FEED][ERROR] subscribe_error msg=%s", msg)
                 continue
 
+            if msg.get("channel") == "subscriptionResponse" or msg.get("type") == "subscriptionResponse":
+                logger.info("[WS_FEED][INFO] subscriptionResponse msg=%s", msg)
+                continue
+
             if self._raw_sample_logged < sample_limit:
                 self._raw_sample_logged += 1
                 try:
@@ -194,6 +197,9 @@ class HyperliquidClient:
             if self._is_mark_price(msg):
                 handled = True
                 self._handle_mark(msg)
+            if self._is_all_mids(msg):
+                handled = True
+                self._handle_all_mids(msg)
 
             if handled and not self._first_market_logged:
                 self._first_market_logged = True
@@ -246,6 +252,16 @@ class HyperliquidClient:
             return True
         return False
 
+    def _is_all_mids(self, msg: Dict[str, Any]) -> bool:
+        if msg.get("channel") == "allMids":
+            return True
+        if msg.get("type") == "allMids":
+            return True
+        data = msg.get("data") or msg.get("result")
+        if isinstance(data, dict) and data.get("type") == "allMids":
+            return True
+        return False
+
     def _handle_l2book(self, msg: Dict[str, Any]) -> None:
         payload = self._extract_payload(msg)
         coin = payload.get("coin") or payload.get("asset") or msg.get("coin") or msg.get("asset")
@@ -272,16 +288,16 @@ class HyperliquidClient:
 
         norm = {"bid": best_bid, "ask": best_ask, "bids": bids, "asks": asks, "ts": ts}
 
-        kind = self._detect_kind(payload, msg, coin)
+        kind, asset = self._detect_kind(payload, msg, coin)
 
         if kind == "perp":
-            self._orderbooks_perp[coin] = norm
+            self._orderbooks_perp[asset] = norm
         else:
-            self._orderbooks_spot[coin] = norm
+            self._orderbooks_spot[asset] = norm
 
         for cb in self._orderbook_listeners:
             try:
-                cb(kind, coin, norm)
+                cb(kind, asset, norm)
             except Exception as exc:  # pragma: no cover - defensive
                 logger.warning("Orderbook listener error: %s", exc)
 
@@ -312,6 +328,30 @@ class HyperliquidClient:
             except Exception as exc:  # pragma: no cover - defensive
                 logger.warning("Mark listener error: %s", exc)
 
+    def _handle_all_mids(self, msg: Dict[str, Any]) -> None:
+        payload = msg.get("data") or msg.get("result") or {}
+        if not isinstance(payload, dict):
+            logger.debug("[WS_FEED][DEBUG] allMids unexpected payload: %s", msg)
+            return
+        mids = payload.get("allMids") if isinstance(payload.get("allMids"), dict) else payload
+        if not isinstance(mids, dict):
+            logger.debug("[WS_FEED][DEBUG] allMids missing mids map: %s", msg)
+            return
+        for coin, mid_val in mids.items():
+            if self._mark_subscriptions and coin not in self._mark_subscriptions:
+                continue
+            try:
+                mid = float(mid_val)
+            except Exception:
+                logger.debug("[WS_FEED][DEBUG] invalid mid price coin=%s val=%s", coin, mid_val)
+                continue
+            self._marks[coin] = mid
+            for cb in self._mark_listeners:
+                try:
+                    cb(coin, mid, {"mid": mid, "time": time.time()})
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.warning("Mark listener error: %s", exc)
+
     def _extract_payload(self, msg: Dict[str, Any]) -> Dict[str, Any]:
         for key in ("data", "result", "payload"):
             val = msg.get(key)
@@ -319,21 +359,25 @@ class HyperliquidClient:
                 return val
         return msg
 
-    def _detect_kind(self, payload: Dict[str, Any], msg: Dict[str, Any], coin: str) -> str:
+    def _detect_kind(self, payload: Dict[str, Any], msg: Dict[str, Any], coin: str) -> tuple[str, str]:
         if payload.get("perp") or payload.get("isPerp") or payload.get("contractType") == "perp":
-            return "perp"
+            return "perp", coin
         if msg.get("perp") or msg.get("isPerp"):
-            return "perp"
+            return "perp", coin
+
+        if isinstance(coin, str) and coin.endswith("/USDC"):
+            return "spot", coin.split("/")[0]
+
         in_spot = coin in self._spot_subscriptions
         in_perp = coin in self._perp_subscriptions
         if in_spot and not in_perp:
-            return "spot"
+            return "spot", coin
         if in_perp and not in_spot:
-            return "perp"
+            return "perp", coin
         if in_spot and in_perp:
             logger.warning("[WS_FEED][WARN] Ambiguous coin subscribed for spot and perp: %s", coin)
-            return "spot"
-        return "spot"
+            return "spot", coin
+        return "spot", coin
 
     def _best_price(self, levels: List[Any], reverse: bool) -> Optional[float]:
         best: Optional[float] = None
