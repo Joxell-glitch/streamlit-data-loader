@@ -155,11 +155,10 @@ class HyperliquidClient:
         self._tracked_bases.update(coins_mark_list)
         spot_symbols = {self._normalize_spot_symbol(base): base for base in coins_spot_list}
         perp_symbols = {self._normalize_perp_symbol(base): base for base in coins_perp_list}
-        mark_symbols = {self._normalize_perp_symbol(base): base for base in coins_mark_list}
         await self.connect_ws()
         if not self._recv_task or self._recv_task.done():
             self._recv_task = asyncio.create_task(self._ws_recv_loop())
-        await self.subscribe_mark_prices(mark_symbols)
+        # Mark price subscription disabled: Hyperliquid does not expose markPrice over WS.
         await self.subscribe_orderbooks(spot_symbols, kind="spot")
         await self.subscribe_orderbooks(perp_symbols, kind="perp")
 
