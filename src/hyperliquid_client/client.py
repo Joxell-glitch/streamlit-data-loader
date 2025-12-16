@@ -469,7 +469,8 @@ class HyperliquidClient:
         await self._session.aclose()
 
     def _normalize_spot_symbol(self, base: str) -> str:
-        return base if "/" in base else f"{base}/USDC"
+        # Hyperliquid spot l2Book expects the base coin, not a "BASE/USDC" pair string.
+        return base.split("/")[0]
 
     def _normalize_perp_symbol(self, base: str) -> str:
         return base.split("/")[0]
