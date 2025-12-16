@@ -27,7 +27,7 @@ async def _run_engine(config_path: str, debug_feeds: bool = False) -> None:
         logging.getLogger("src.hyperliquid_client.client").setLevel(logging.DEBUG)
     init_db(settings)
 
-    assets = settings.trading.whitelist or ["BTC", "ETH", "SOL"]
+    assets = ["BTC"]
     logger.info("Starting spot-perp paper engine for assets: %s", ", ".join(assets))
 
     client = HyperliquidClient(settings.api, settings.network)

@@ -39,8 +39,12 @@ class HyperliquidClient:
         self._perp_subscriptions: set[str] = set()
         self._mark_subscriptions: set[str] = set()
         self._all_mids_subscribed = False
+        self._l2book_subscribed = False
         self._raw_sample_logged = 0
         self._first_market_logged = False
+        self._first_data_logged = False
+        self._first_l2book_logged = False
+        self._first_data_event = asyncio.Event()
 
     @property
     def rest_base(self) -> str:
@@ -104,11 +108,13 @@ class HyperliquidClient:
             self._perp_subscriptions.update(coins_list)
         else:
             self._spot_subscriptions.update(coins_list)
+        if self._l2book_subscribed:
+            return
         for coin in coins_list:
-            coin_symbol = f"{coin}/USDC" if kind != "perp" else coin
-            sub = {"method": "subscribe", "subscription": {"type": "l2Book", "coin": coin_symbol}}
+            sub = {"method": "subscribe", "subscription": {"type": "l2Book", "coin": coin}}
             logger.info("[WS_FEED][INFO] sending_subscribe payload=%s", json.dumps(sub))
             await self._ws.send(json.dumps(sub))
+            self._l2book_subscribed = True
 
     async def subscribe_mark_prices(self, coins: Iterable[str]) -> None:
         await self._connected_event.wait()
@@ -129,22 +135,23 @@ class HyperliquidClient:
         coins_perp: Iterable[str],
         coins_mark: Iterable[str],
     ) -> None:
+        coins_spot = ["BTC"]
+        coins_perp = ["BTC"]
+        coins_mark = ["BTC"]
         await self.connect_ws()
-        await self.subscribe_orderbooks(coins_spot, kind="spot")
-        await self.subscribe_orderbooks(coins_perp, kind="perp")
-        await self.subscribe_mark_prices(coins_mark)
         if not self._recv_task or self._recv_task.done():
             self._recv_task = asyncio.create_task(self._ws_recv_loop())
+        await self.subscribe_mark_prices(coins_mark)
 
-    async def _resubscribe_all(self) -> None:
-        # Reset one-shot markers when recovering from a disconnect
-        self._all_mids_subscribed = False
-        if self._spot_subscriptions:
-            await self.subscribe_orderbooks(self._spot_subscriptions, kind="spot")
-        if self._perp_subscriptions:
-            await self.subscribe_orderbooks(self._perp_subscriptions, kind="perp")
-        if self._mark_subscriptions:
-            await self.subscribe_mark_prices(self._mark_subscriptions)
+        async def _delayed_l2book_subscribe() -> None:
+            try:
+                await asyncio.wait_for(self._first_data_event.wait(), timeout=3)
+            except asyncio.TimeoutError:
+                logger.info("[WS_FEED][INFO] first_data_wait_timeout sending l2Book subscribe")
+            await self.subscribe_orderbooks(coins_spot, kind="spot")
+            await self.subscribe_orderbooks(coins_perp, kind="perp")
+
+        asyncio.create_task(_delayed_l2book_subscribe())
 
     async def _ws_recv_loop(self) -> None:
         sample_limit = 5
@@ -158,9 +165,7 @@ class HyperliquidClient:
             except websockets.ConnectionClosed as exc:
                 logger.warning("WebSocket closed: %s", exc)
                 self._connected_event.clear()
-                await self.connect_ws()
-                await self._resubscribe_all()
-                continue
+                break
             except Exception as exc:  # pragma: no cover - defensive
                 logger.warning("WebSocket receive error: %s", exc)
                 await asyncio.sleep(0.5)
@@ -173,6 +178,12 @@ class HyperliquidClient:
             if msg.get("channel") == "error" or msg.get("type") == "error":
                 logger.error("[WS_FEED][ERROR] subscribe_error msg=%s", msg)
                 continue
+
+            if not self._first_data_logged:
+                self._first_data_logged = True
+                channel = msg.get("channel") or msg.get("type") or "unknown"
+                logger.info("[WS_FEED][INFO] first_data_received channel=%s", channel)
+                self._first_data_event.set()
 
             if msg.get("channel") == "subscriptionResponse" or msg.get("type") == "subscriptionResponse":
                 logger.info("[WS_FEED][INFO] subscriptionResponse msg=%s", msg)
@@ -268,6 +279,10 @@ class HyperliquidClient:
         if not coin:
             logger.debug("[WS_FEED][DEBUG] l2Book without coin: %s", msg)
             return
+
+        if not self._first_l2book_logged:
+            self._first_l2book_logged = True
+            logger.info("[WS_FEED][INFO] first_l2book_received coin=%s", coin)
 
         levels = payload.get("levels") or payload
         bids = levels.get("bids") if isinstance(levels, dict) else None
