@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import argparse
+import logging
 from typing import Optional
 
 from src.config.loader import load_config
@@ -12,9 +14,17 @@ from src.strategy.spot_perp_paper import SpotPerpPaperEngine
 logger = get_logger(__name__)
 
 
-async def _run_engine(config_path: str) -> None:
+async def _run_engine(config_path: str, debug_feeds: bool = False) -> None:
     settings = load_config(config_path)
     setup_logging(settings.logging)
+
+    if debug_feeds:
+        root_logger = logging.getLogger()
+        root_logger.setLevel(logging.DEBUG)
+        for handler in root_logger.handlers:
+            handler.setLevel(logging.DEBUG)
+        logging.getLogger("src.strategy.spot_perp_paper").setLevel(logging.DEBUG)
+        logging.getLogger("src.hyperliquid_client.client").setLevel(logging.DEBUG)
     init_db(settings)
 
     assets = settings.trading.whitelist or ["BTC", "ETH", "SOL"]
@@ -36,7 +46,16 @@ async def _run_engine(config_path: str) -> None:
 
 
 def main(config_path: Optional[str] = "config/config.yaml") -> None:
-    asyncio.run(_run_engine(config_path))
+    parser = argparse.ArgumentParser(description="Run spot-perp paper engine")
+    parser.add_argument("--config", default=config_path, help="Path to config YAML file")
+    parser.add_argument(
+        "--debug-feeds",
+        action="store_true",
+        help="Enable verbose debug logging for spot/perp feed handling",
+    )
+    args = parser.parse_args()
+
+    asyncio.run(_run_engine(args.config, debug_feeds=args.debug_feeds))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 from dataclasses import dataclass, field
@@ -67,17 +68,35 @@ class SpotPerpPaperEngine:
         self.db_session_factory = db_session_factory
         self.asset_state: Dict[str, AssetState] = {asset: AssetState() for asset in self.assets}
         self._running = False
+        self._heartbeat_interval = 10
+        self._heartbeat_task: Optional[asyncio.Task] = None
+        self._last_heartbeat = time.time()
+        self.update_counts: Dict[str, Dict[str, int]] = {
+            asset: {"spot": 0, "perp": 0, "mark": 0} for asset in self.assets
+        }
 
     async def run_forever(self, stop_event: Optional[asyncio.Event] = None) -> None:
         self._running = True
+        logger.info(
+            "[SPOT_PERP][INFO] engine_start assets=%s log_every_seconds=%s",
+            self.assets,
+            self._heartbeat_interval,
+        )
         await self.client.connect_ws()
         await self._subscribe_streams()
+
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(stop_event))
 
         async for msg in self.client.ws_messages():
             if stop_event and stop_event.is_set():
                 break
             self._handle_message(msg)
         self._running = False
+
+        if self._heartbeat_task:
+            self._heartbeat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._heartbeat_task
 
     async def _subscribe_streams(self) -> None:
         """Subscribe to spot and perp books plus mark/funding updates."""
@@ -90,6 +109,15 @@ class SpotPerpPaperEngine:
             subscriptions.append({"type": "markPrice", "coin": asset})
             subscriptions.append({"type": "funding", "coin": asset})
         await self.client._ws.send(json.dumps({"type": "subscribe", "subscriptions": subscriptions}))
+        spot_topics = [f"l2Book:{asset}" for asset in self.assets]
+        perp_topics = [f"l2Book:{asset}:perp" for asset in self.assets]
+        mark_topics = [f"markPrice:{asset}" for asset in self.assets]
+        logger.info(
+            "[SPOT_PERP][INFO] subscriptions spot_topics=%s perp_topics=%s mark_topics=%s",
+            spot_topics,
+            perp_topics,
+            mark_topics,
+        )
 
     def _handle_message(self, msg: Dict) -> None:
         msg_type = msg.get("type")
@@ -103,21 +131,84 @@ class SpotPerpPaperEngine:
             book = BookSnapshot.from_levels(bids, asks)
             if msg.get("perp") or msg.get("isPerp"):
                 self.asset_state[coin].perp = book
+                self.update_counts[coin]["perp"] += 1
+                logger.debug(
+                    "[SPOT_PERP][DEBUG] perp_update asset=%s bid=%.6f ask=%.6f ts=%s",
+                    coin,
+                    book.best_bid,
+                    book.best_ask,
+                    msg.get("time") or msg.get("ts") or time.time(),
+                )
             else:
                 self.asset_state[coin].spot = book
+                self.update_counts[coin]["spot"] += 1
+                logger.debug(
+                    "[SPOT_PERP][DEBUG] spot_update asset=%s bid=%.6f ask=%.6f ts=%s",
+                    coin,
+                    book.best_bid,
+                    book.best_ask,
+                    msg.get("time") or msg.get("ts") or time.time(),
+                )
             self._evaluate_and_record(coin)
         elif msg_type == "markPrice":
             coin = msg.get("coin")
             if coin in self.asset_state:
                 self.asset_state[coin].mark_price = float(msg.get("mark", 0.0))
+                self.update_counts[coin]["mark"] += 1
+                logger.debug(
+                    "[SPOT_PERP][DEBUG] mark_update asset=%s mark=%.6f ts=%s",
+                    coin,
+                    self.asset_state[coin].mark_price,
+                    msg.get("time") or msg.get("ts") or time.time(),
+                )
         elif msg_type == "funding":
             coin = msg.get("coin")
             if coin in self.asset_state:
                 self.asset_state[coin].funding_rate = float(msg.get("fundingRate", 0.0))
 
+    async def _heartbeat_loop(self, stop_event: Optional[asyncio.Event]) -> None:
+        while self._running and (not stop_event or not stop_event.is_set()):
+            await asyncio.sleep(self._heartbeat_interval)
+            self._log_heartbeat()
+
+    def _log_heartbeat(self) -> None:
+        self._last_heartbeat = time.time()
+        for asset, counts in self.update_counts.items():
+            state = self.asset_state[asset]
+            spot_ok = counts["spot"] > 0 and state.spot.has_liquidity()
+            perp_ok = counts["perp"] > 0 and state.perp.has_liquidity()
+            mark_ok = counts["mark"] > 0 and state.mark_price > 0
+            logger.info(
+                (
+                    "[SPOT_PERP][INFO] heartbeat asset=%s "
+                    "spot_seen=%d perp_seen=%d mark_seen=%d "
+                    "spot_ok=%s perp_ok=%s mark_ok=%s"
+                ),
+                asset,
+                counts["spot"],
+                counts["perp"],
+                counts["mark"],
+                spot_ok,
+                perp_ok,
+                mark_ok,
+            )
+
     def _evaluate_and_record(self, asset: str) -> None:
         state = self.asset_state[asset]
-        if not state.ready():
+        missing_components = []
+        if not state.spot.has_liquidity():
+            missing_components.append("spot")
+        if not state.perp.has_liquidity():
+            missing_components.append("perp")
+        if state.mark_price <= 0:
+            logger.debug("[SPOT_PERP][DEBUG] compute_skip asset=%s missing=mark", asset)
+
+        if missing_components:
+            logger.debug(
+                "[SPOT_PERP][DEBUG] compute_skip asset=%s missing=%s",
+                asset,
+                ",".join(missing_components),
+            )
             return
 
         spot = state.spot
@@ -125,28 +216,42 @@ class SpotPerpPaperEngine:
         notional = max(self.trading.min_position_size, 1.0)
         funding_estimate = state.funding_rate * notional
 
-        # Case A: spot undervalued
-        if perp.best_bid > spot.best_ask > 0:
-            spread_gross = (perp.best_bid - spot.best_ask) / spot.best_ask
+        spread_long = (
+            (perp.best_bid - spot.best_ask) / spot.best_ask if spot.best_ask > 0 else float("-inf")
+        )
+        spread_short = (
+            (spot.best_bid - perp.best_ask) / spot.best_bid if perp.best_ask > 0 else float("-inf")
+        )
+
+        if spread_long >= spread_short:
+            spread_gross = spread_long
             direction = "spot_long"
             spot_px = spot.best_ask
             perp_px = perp.best_bid
             spot_label = "spot_ask"
             perp_label = "perp_bid"
-        # Case B: spot overvalued
-        elif spot.best_bid > perp.best_ask > 0:
-            spread_gross = (spot.best_bid - perp.best_ask) / spot.best_bid
+        else:
+            spread_gross = spread_short
             direction = "spot_short"
             spot_px = spot.best_bid
             perp_px = perp.best_ask
             spot_label = "spot_bid"
             perp_label = "perp_ask"
-        else:
-            return
 
         fee_spot = self.taker_fee_spot * notional
         fee_perp = self.taker_fee_perp * notional
         pnl_net = spread_gross * notional - fee_spot - fee_perp - funding_estimate
+
+        logger.info(
+            "[SPOT_PERP][INFO] compute_attempt asset=%s spot_price=%.6f perp_price=%.6f mark=%.6f "
+            "spread_gross=%+.6f pnl_net_est=%+.6f",
+            asset,
+            spot_px,
+            perp_px,
+            state.mark_price,
+            spread_gross,
+            pnl_net,
+        )
 
         if spread_gross <= 0 or pnl_net <= 0:
             return
