@@ -20,6 +20,7 @@ logger = get_logger(__name__)
 class BookSnapshot:
     best_bid: float = 0.0
     best_ask: float = 0.0
+    ts: float = 0.0
 
     @classmethod
     def from_levels(cls, bids: List[Tuple[float, float]], asks: List[Tuple[float, float]]):
@@ -37,6 +38,7 @@ class AssetState:
     perp: BookSnapshot = field(default_factory=BookSnapshot)
     mark_price: float = 0.0
     funding_rate: float = 0.0
+    mark_ts: float = 0.0
 
     def ready(self) -> bool:
         return self.spot.has_liquidity() and self.perp.has_liquidity() and self.mark_price > 0
@@ -77,9 +79,17 @@ class SpotPerpPaperEngine:
         self.client.add_orderbook_listener(self._on_orderbook)
         self.client.add_mark_listener(self._on_mark)
         self._last_update_log: Dict[str, Dict[str, float]] = {
-            asset: {"spot": 0.0, "perp": 0.0, "mark": 0.0, "skip": 0.0, "ready": 0.0}
+            asset: {
+                "spot": 0.0,
+                "perp": 0.0,
+                "mark": 0.0,
+                "skip": 0.0,
+                "ready": 0.0,
+                "state": 0.0,
+            }
             for asset in self.assets
         }
+        self._state_log_interval = 10.0
 
     async def run_forever(self, stop_event: Optional[asyncio.Event] = None) -> None:
         self._running = True
@@ -104,10 +114,12 @@ class SpotPerpPaperEngine:
     def _on_orderbook(self, kind: str, coin: str, ob_norm: Dict[str, Any]) -> None:
         if coin not in self.asset_state:
             return
-        book = BookSnapshot(best_bid=ob_norm.get("bid") or 0.0, best_ask=ob_norm.get("ask") or 0.0)
-        ts = ob_norm.get("ts") or time.time()
+        ts = float(ob_norm.get("ts") or time.time())
+        book = BookSnapshot(best_bid=ob_norm.get("bid") or 0.0, best_ask=ob_norm.get("ask") or 0.0, ts=ts)
         if kind == "perp":
             self.asset_state[coin].perp = book
+            if self.update_counts[coin]["perp"] == 0:
+                logger.info("[SPOT_PERP][INFO] first_perp_l2_received asset=%s", coin)
             if book.has_liquidity():
                 self.update_counts[coin]["perp"] += 1
             if ts - self._last_update_log[coin]["perp"] >= 1:
@@ -121,6 +133,8 @@ class SpotPerpPaperEngine:
                 )
         else:
             self.asset_state[coin].spot = book
+            if self.update_counts[coin]["spot"] == 0:
+                logger.info("[SPOT_PERP][INFO] first_spot_l2_received asset=%s", coin)
             if book.has_liquidity():
                 self.update_counts[coin]["spot"] += 1
             if ts - self._last_update_log[coin]["spot"] >= 1:
@@ -138,6 +152,9 @@ class SpotPerpPaperEngine:
         if coin not in self.asset_state:
             return
         self.asset_state[coin].mark_price = mark
+        self.asset_state[coin].mark_ts = float(raw_payload.get("time") or raw_payload.get("ts") or time.time())
+        if self.update_counts[coin]["mark"] == 0:
+            logger.info("[SPOT_PERP][INFO] first_mark_received asset=%s", coin)
         self.update_counts[coin]["mark"] += 1
         ts = raw_payload.get("time") or raw_payload.get("ts") or time.time()
         if ts - self._last_update_log[coin]["mark"] >= 1:
@@ -180,6 +197,24 @@ class SpotPerpPaperEngine:
                 perp_ok,
                 mark_ok,
             )
+            now = time.time()
+            if now - self._last_update_log[asset]["state"] >= self._state_log_interval:
+                self._last_update_log[asset]["state"] = now
+                logger.info(
+                    (
+                        "[SPOT_PERP][STATE] asset=%s spot_bid=%.6f spot_ask=%.6f "
+                        "perp_bid=%.6f perp_ask=%.6f mark=%.6f spot_ok=%s perp_ok=%s mark_ok=%s"
+                    ),
+                    asset,
+                    state.spot.best_bid,
+                    state.spot.best_ask,
+                    state.perp.best_bid,
+                    state.perp.best_ask,
+                    state.mark_price,
+                    spot_ok,
+                    perp_ok,
+                    mark_ok,
+                )
             if spot_ok and perp_ok and mark_ok and (time.time() - self._last_update_log[asset]["ready"] >= 1):
                 self._last_update_log[asset]["ready"] = time.time()
                 logger.info(
