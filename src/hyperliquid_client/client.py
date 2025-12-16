@@ -138,7 +138,7 @@ class HyperliquidClient:
                 continue
             self._mark_subscriptions.add(coin)
             self._mark_symbol_to_base[coin] = base
-            await self._send_subscribe({"type": "markPrice", "coin": coin})
+            await self._send_subscribe({"type": "markPrice", "coin": coin, "isPerp": True})
             await asyncio.sleep(0.2)
 
     async def start_market_data(
