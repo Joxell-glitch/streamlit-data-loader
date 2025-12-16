@@ -14,7 +14,7 @@ from src.strategy.spot_perp_paper import SpotPerpPaperEngine
 logger = get_logger(__name__)
 
 
-async def _run_engine(config_path: str, debug_feeds: bool = False) -> None:
+async def _run_engine(config_path: str, debug_feeds: bool = False, assets_arg: Optional[str] = None) -> None:
     settings = load_config(config_path)
     setup_logging(settings.logging)
 
@@ -27,7 +27,7 @@ async def _run_engine(config_path: str, debug_feeds: bool = False) -> None:
         logging.getLogger("src.hyperliquid_client.client").setLevel(logging.DEBUG)
     init_db(settings)
 
-    assets = ["BTC"]
+    assets = [a.strip().upper() for a in assets_arg.split(",") if a.strip()] if assets_arg else ["BTC"]
     logger.info("Starting spot-perp paper engine for assets: %s", ", ".join(assets))
 
     client = HyperliquidClient(settings.api, settings.network)
@@ -53,9 +53,14 @@ def main(config_path: Optional[str] = "config/config.yaml") -> None:
         action="store_true",
         help="Enable verbose debug logging for spot/perp feed handling",
     )
+    parser.add_argument(
+        "--assets",
+        default=None,
+        help="Comma-separated list of asset symbols to track (e.g. BTC,ETH,SOL)",
+    )
     args = parser.parse_args()
 
-    asyncio.run(_run_engine(args.config, debug_feeds=args.debug_feeds))
+    asyncio.run(_run_engine(args.config, debug_feeds=args.debug_feeds, assets_arg=args.assets))
 
 
 if __name__ == "__main__":
