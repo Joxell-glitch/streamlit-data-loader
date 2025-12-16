@@ -123,7 +123,6 @@ class HyperliquidClient:
             perp_key = f"perp:{payload_coin}"
             spot_key = f"spot:{payload_coin}"
             if kind == "perp":
-                sub_payload["isPerp"] = True
                 self._perp_subscriptions.add(perp_key)
                 self._perp_symbol_to_base[payload_coin] = base_asset
             else:
@@ -133,7 +132,7 @@ class HyperliquidClient:
                 continue
             await self._send_subscribe(sub_payload)
             self._sent_subscriptions.add(sub_key)
-            await asyncio.sleep(0.2)
+            time.sleep(0.15)
 
     async def subscribe_mark_prices(self, symbol_map: Dict[str, str]) -> None:
         await self._connected_event.wait()
@@ -150,7 +149,7 @@ class HyperliquidClient:
             self._mark_symbol_to_base[coin] = base
             await self._send_subscribe(sub_payload)
             self._sent_subscriptions.add(sub_key)
-            await asyncio.sleep(0.2)
+            time.sleep(0.15)
 
     async def start_market_data(
         self,
@@ -169,11 +168,11 @@ class HyperliquidClient:
         await self.connect_ws()
         if not self._recv_task or self._recv_task.done():
             self._recv_task = asyncio.create_task(self._ws_recv_loop())
-        await self.subscribe_orderbooks(spot_symbols, kind="spot")
-        await self.subscribe_orderbooks(perp_symbols, kind="perp")
         if coins_mark_list:
             mark_symbols = {self._normalize_perp_symbol(base): base for base in coins_mark_list}
             await self.subscribe_mark_prices(mark_symbols)
+        await self.subscribe_orderbooks(spot_symbols, kind="spot")
+        await self.subscribe_orderbooks(perp_symbols, kind="perp")
 
     async def _ws_recv_loop(self) -> None:
         sample_limit = 5
