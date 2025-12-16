@@ -39,7 +39,7 @@ class AssetState:
     funding_rate: float = 0.0
 
     def ready(self) -> bool:
-        return self.spot.has_liquidity() and self.perp.has_liquidity()
+        return self.spot.has_liquidity() and self.perp.has_liquidity() and self.mark_price > 0
 
 
 class SpotPerpPaperEngine:
@@ -76,6 +76,10 @@ class SpotPerpPaperEngine:
 
         self.client.add_orderbook_listener(self._on_orderbook)
         self.client.add_mark_listener(self._on_mark)
+        self._last_update_log: Dict[str, Dict[str, float]] = {
+            asset: {"spot": 0.0, "perp": 0.0, "mark": 0.0, "skip": 0.0, "ready": 0.0}
+            for asset in self.assets
+        }
 
     async def run_forever(self, stop_event: Optional[asyncio.Event] = None) -> None:
         self._running = True
@@ -105,23 +109,27 @@ class SpotPerpPaperEngine:
         if kind == "perp":
             self.asset_state[coin].perp = book
             self.update_counts[coin]["perp"] += 1
-            logger.debug(
-                "[SPOT_PERP][DEBUG] perp_update asset=%s bid=%.6f ask=%.6f ts=%s",
-                coin,
-                book.best_bid,
-                book.best_ask,
-                ts,
-            )
+            if ts - self._last_update_log[coin]["perp"] >= 1:
+                self._last_update_log[coin]["perp"] = ts
+                logger.debug(
+                    "[SPOT_PERP][DEBUG] perp_update asset=%s bid=%.6f ask=%.6f ts=%s",
+                    coin,
+                    book.best_bid,
+                    book.best_ask,
+                    ts,
+                )
         else:
             self.asset_state[coin].spot = book
             self.update_counts[coin]["spot"] += 1
-            logger.debug(
-                "[SPOT_PERP][DEBUG] spot_update asset=%s bid=%.6f ask=%.6f ts=%s",
-                coin,
-                book.best_bid,
-                book.best_ask,
-                ts,
-            )
+            if ts - self._last_update_log[coin]["spot"] >= 1:
+                self._last_update_log[coin]["spot"] = ts
+                logger.debug(
+                    "[SPOT_PERP][DEBUG] spot_update asset=%s bid=%.6f ask=%.6f ts=%s",
+                    coin,
+                    book.best_bid,
+                    book.best_ask,
+                    ts,
+                )
         self._evaluate_and_record(coin)
 
     def _on_mark(self, coin: str, mark: float, raw_payload: Dict[str, Any]) -> None:
@@ -130,12 +138,14 @@ class SpotPerpPaperEngine:
         self.asset_state[coin].mark_price = mark
         self.update_counts[coin]["mark"] += 1
         ts = raw_payload.get("time") or raw_payload.get("ts") or time.time()
-        logger.debug(
-            "[SPOT_PERP][DEBUG] mark_update asset=%s mark=%.6f ts=%s",
-            coin,
-            mark,
-            ts,
-        )
+        if ts - self._last_update_log[coin]["mark"] >= 1:
+            self._last_update_log[coin]["mark"] = ts
+            logger.debug(
+                "[SPOT_PERP][DEBUG] mark_update asset=%s mark=%.6f ts=%s",
+                coin,
+                mark,
+                ts,
+            )
         if raw_payload.get("fundingRate") is not None:
             try:
                 self.asset_state[coin].funding_rate = float(raw_payload.get("fundingRate"))
@@ -168,6 +178,15 @@ class SpotPerpPaperEngine:
                 perp_ok,
                 mark_ok,
             )
+            if spot_ok and perp_ok and mark_ok and (time.time() - self._last_update_log[asset]["ready"] >= 1):
+                self._last_update_log[asset]["ready"] = time.time()
+                logger.info(
+                    "[SPOT_PERP][INFO] data_ready asset=%s spot_ok=%s perp_ok=%s mark_ok=%s",
+                    asset,
+                    spot_ok,
+                    perp_ok,
+                    mark_ok,
+                )
 
     def _evaluate_and_record(self, asset: str) -> None:
         state = self.asset_state[asset]
@@ -177,14 +196,19 @@ class SpotPerpPaperEngine:
         if not state.perp.has_liquidity():
             missing_components.append("perp")
         if state.mark_price <= 0:
-            logger.debug("[SPOT_PERP][DEBUG] compute_skip asset=%s missing=mark", asset)
+            if time.time() - self._last_update_log[asset]["skip"] >= 1:
+                self._last_update_log[asset]["skip"] = time.time()
+                logger.debug("[SPOT_PERP][DEBUG] compute_skip asset=%s missing=mark", asset)
+            return
 
         if missing_components:
-            logger.debug(
-                "[SPOT_PERP][DEBUG] compute_skip asset=%s missing=%s",
-                asset,
-                ",".join(missing_components),
-            )
+            if time.time() - self._last_update_log[asset]["skip"] >= 1:
+                self._last_update_log[asset]["skip"] = time.time()
+                logger.debug(
+                    "[SPOT_PERP][DEBUG] compute_skip asset=%s missing=%s",
+                    asset,
+                    ",".join(missing_components),
+                )
             return
 
         spot = state.spot

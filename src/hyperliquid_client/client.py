@@ -30,6 +30,10 @@ class HyperliquidClient:
         self._orderbooks_spot: Dict[str, Dict[str, Any]] = {}
         self._orderbooks_perp: Dict[str, Dict[str, Any]] = {}
         self._marks: Dict[str, float] = {}
+        self._mids_map: Dict[str, float] = {}
+
+        # Tracking assets
+        self._tracked_bases: set[str] = set()
 
         # Subscriptions/bookkeeping
         self._orderbook_listeners: List[Callable[[str, str, Dict[str, Any]], None]] = []
@@ -38,12 +42,13 @@ class HyperliquidClient:
         self._spot_subscriptions: set[str] = set()
         self._perp_subscriptions: set[str] = set()
         self._mark_subscriptions: set[str] = set()
+        self._sent_subscriptions: set[tuple] = set()
         self._all_mids_subscribed = False
-        self._l2book_subscribed = False
         self._raw_sample_logged = 0
         self._first_market_logged = False
         self._first_data_logged = False
         self._first_l2book_logged = False
+        self._first_allmids_logged = False
         self._first_data_event = asyncio.Event()
 
     @property
@@ -104,17 +109,19 @@ class HyperliquidClient:
         if not self._ws:
             raise RuntimeError("WebSocket not connected")
         coins_list = list(coins)
-        if kind == "perp":
-            self._perp_subscriptions.update(coins_list)
-        else:
-            self._spot_subscriptions.update(coins_list)
-        if self._l2book_subscribed:
-            return
         for coin in coins_list:
-            sub = {"method": "subscribe", "subscription": {"type": "l2Book", "coin": coin}}
-            logger.info("[WS_FEED][INFO] sending_subscribe payload=%s", json.dumps(sub))
-            await self._ws.send(json.dumps(sub))
-            self._l2book_subscribed = True
+            sub_payload: Dict[str, Any] = {"type": "l2Book", "coin": coin}
+            sub_key = ("l2Book", coin, kind == "perp")
+            if kind == "perp":
+                sub_payload["perp"] = True
+                self._perp_subscriptions.add(coin)
+            else:
+                self._spot_subscriptions.add(coin)
+            if sub_key in self._sent_subscriptions:
+                continue
+            await self._send_subscribe(sub_payload)
+            self._sent_subscriptions.add(sub_key)
+            await asyncio.sleep(0.2)
 
     async def subscribe_mark_prices(self, coins: Iterable[str]) -> None:
         await self._connected_event.wait()
@@ -124,9 +131,7 @@ class HyperliquidClient:
         self._mark_subscriptions.update(coins_list)
         if self._all_mids_subscribed:
             return
-        sub = {"method": "subscribe", "subscription": {"type": "allMids"}}
-        logger.info("[WS_FEED][INFO] sending_subscribe payload=%s", json.dumps(sub))
-        await self._ws.send(json.dumps(sub))
+        await self._send_subscribe({"type": "allMids"})
         self._all_mids_subscribed = True
 
     async def start_market_data(
@@ -135,9 +140,12 @@ class HyperliquidClient:
         coins_perp: Iterable[str],
         coins_mark: Iterable[str],
     ) -> None:
-        coins_spot = ["BTC"]
-        coins_perp = ["BTC"]
-        coins_mark = ["BTC"]
+        coins_spot = list(coins_spot)
+        coins_perp = list(coins_perp)
+        coins_mark = list(coins_mark)
+        self._tracked_bases.update(coins_spot)
+        self._tracked_bases.update(coins_perp)
+        self._tracked_bases.update(coins_mark)
         await self.connect_ws()
         if not self._recv_task or self._recv_task.done():
             self._recv_task = asyncio.create_task(self._ws_recv_loop())
@@ -148,7 +156,8 @@ class HyperliquidClient:
                 await asyncio.wait_for(self._first_data_event.wait(), timeout=3)
             except asyncio.TimeoutError:
                 logger.info("[WS_FEED][INFO] first_data_wait_timeout sending l2Book subscribe")
-            await self.subscribe_orderbooks(coins_spot, kind="spot")
+            spot_pairs = [f"{coin}/USDC" for coin in coins_spot]
+            await self.subscribe_orderbooks(spot_pairs, kind="spot")
             await self.subscribe_orderbooks(coins_perp, kind="perp")
 
         asyncio.create_task(_delayed_l2book_subscribe())
@@ -273,6 +282,14 @@ class HyperliquidClient:
             return True
         return False
 
+    async def _send_subscribe(self, sub: Dict[str, Any]) -> None:
+        await self._connected_event.wait()
+        if not self._ws:
+            raise RuntimeError("WebSocket not connected")
+        payload = {"method": "subscribe", "subscription": sub}
+        logger.info("[WS_FEED][INFO] sending_subscribe payload=%s", json.dumps(payload))
+        await self._ws.send(json.dumps(payload))
+
     def _handle_l2book(self, msg: Dict[str, Any]) -> None:
         payload = self._extract_payload(msg)
         coin = payload.get("coin") or payload.get("asset") or msg.get("coin") or msg.get("asset")
@@ -303,7 +320,12 @@ class HyperliquidClient:
 
         norm = {"bid": best_bid, "ask": best_ask, "bids": bids, "asks": asks, "ts": ts}
 
-        kind, asset = self._detect_kind(payload, msg, coin)
+        if isinstance(coin, str) and "/USDC" in coin:
+            kind = "spot"
+            asset = coin.split("/")[0]
+        else:
+            kind = "perp"
+            asset = coin
 
         if kind == "perp":
             self._orderbooks_perp[asset] = norm
@@ -335,11 +357,12 @@ class HyperliquidClient:
             logger.debug("[WS_FEED][DEBUG] markPrice missing/invalid price: %s", msg)
             return
 
-        self._marks[coin] = mark
+        base = coin.split("/")[0] if isinstance(coin, str) and "/" in coin else coin
+        self._marks[base] = mark
 
         for cb in self._mark_listeners:
             try:
-                cb(coin, mark, payload)
+                cb(base, mark, payload)
             except Exception as exc:  # pragma: no cover - defensive
                 logger.warning("Mark listener error: %s", exc)
 
@@ -348,22 +371,45 @@ class HyperliquidClient:
         if not isinstance(payload, dict):
             logger.debug("[WS_FEED][DEBUG] allMids unexpected payload: %s", msg)
             return
-        mids = payload.get("allMids") if isinstance(payload.get("allMids"), dict) else payload
+        mids = payload.get("mids") if isinstance(payload.get("mids"), dict) else None
+        if mids is None:
+            mids = payload.get("allMids") if isinstance(payload.get("allMids"), dict) else None
+        if mids is None and all(isinstance(v, (int, float, str)) for v in payload.values()):
+            mids = payload  # Already the mids map
         if not isinstance(mids, dict):
             logger.debug("[WS_FEED][DEBUG] allMids missing mids map: %s", msg)
             return
+
+        if not self._first_allmids_logged:
+            self._first_allmids_logged = True
+            logger.info("[WS_FEED][INFO] first_allmids_received")
+
+        self._mids_map = {}
         for coin, mid_val in mids.items():
-            if self._mark_subscriptions and coin not in self._mark_subscriptions:
-                continue
             try:
                 mid = float(mid_val)
             except Exception:
                 logger.debug("[WS_FEED][DEBUG] invalid mid price coin=%s val=%s", coin, mid_val)
                 continue
-            self._marks[coin] = mid
+            self._mids_map[coin] = mid
+
+        now = time.time()
+        targets = self._tracked_bases or self._mark_subscriptions
+        for base in targets:
+            mid = None
+            source_symbol = None
+            for symbol in (base, f"{base}/USDC"):
+                if symbol in self._mids_map:
+                    mid = self._mids_map[symbol]
+                    source_symbol = symbol
+                    break
+            if mid is None:
+                continue
+            self._marks[base] = mid
+            payload_out = {"mid": mid, "time": now, "symbol": source_symbol or base}
             for cb in self._mark_listeners:
                 try:
-                    cb(coin, mid, {"mid": mid, "time": time.time()})
+                    cb(base, mid, payload_out)
                 except Exception as exc:  # pragma: no cover - defensive
                     logger.warning("Mark listener error: %s", exc)
 
