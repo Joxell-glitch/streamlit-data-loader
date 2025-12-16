@@ -39,6 +39,7 @@ class HyperliquidClient:
         self._perp_subscriptions: set[str] = set()
         self._mark_subscriptions: set[str] = set()
         self._raw_sample_logged = 0
+        self._first_market_logged = False
 
     @property
     def rest_base(self) -> str:
@@ -103,12 +104,13 @@ class HyperliquidClient:
         else:
             self._spot_subscriptions.update(coins_list)
         sub = {
-            "type": "subscribe",
+            "method": "subscribe",
             "subscriptions": [
                 {"type": "l2Book", "coin": coin, **({"perp": True} if kind == "perp" else {})}
                 for coin in coins_list
             ],
         }
+        logger.info("[WS_FEED][INFO] sending_subscribe payload=%s", json.dumps(sub))
         await self._ws.send(json.dumps(sub))
 
     async def subscribe_mark_prices(self, coins: Iterable[str]) -> None:
@@ -118,9 +120,10 @@ class HyperliquidClient:
         coins_list = list(coins)
         self._mark_subscriptions.update(coins_list)
         sub = {
-            "type": "subscribe",
+            "method": "subscribe",
             "subscriptions": [{"type": "markPrice", "coin": coin} for coin in coins_list],
         }
+        logger.info("[WS_FEED][INFO] sending_subscribe payload=%s", json.dumps(sub))
         await self._ws.send(json.dumps(sub))
 
     async def start_market_data(
@@ -168,6 +171,10 @@ class HyperliquidClient:
             if msg is None:
                 continue
 
+            if msg.get("channel") == "error" or msg.get("type") == "error":
+                logger.error("[WS_FEED][ERROR] subscribe_error msg=%s", msg)
+                continue
+
             if self._raw_sample_logged < sample_limit:
                 self._raw_sample_logged += 1
                 try:
@@ -187,6 +194,11 @@ class HyperliquidClient:
             if self._is_mark_price(msg):
                 handled = True
                 self._handle_mark(msg)
+
+            if handled and not self._first_market_logged:
+                self._first_market_logged = True
+                channel = msg.get("channel") or msg.get("type") or "unknown"
+                logger.info("[WS_FEED][INFO] first_market_msg channel=%s keys=%s", channel, list(msg.keys()))
 
             if not handled:
                 logger.debug("[WS_FEED][DEBUG] Unrecognized message: %s", msg)
