@@ -18,6 +18,7 @@ from src.core.logging import get_logger
 logger = get_logger(__name__)
 
 BOOKS_IDLE_TIMEOUT = int(os.getenv("HL_BOOKS_IDLE_TIMEOUT", "20"))
+BOOKS_SOCKET_CAP = int(os.getenv("HL_BOOKS_SOCKET_CAP", "3"))
 
 
 class HyperliquidClient:
@@ -27,7 +28,7 @@ class HyperliquidClient:
         self.api_settings = api_settings
         self.network = network
         self._ws_market: Optional[WebSocketClientProtocol] = None
-        self._ws_books: Optional[WebSocketClientProtocol] = None
+        self._ws_books: Dict[str, WebSocketClientProtocol] = {}
         self._ws_lock = asyncio.Lock()
         self._session = httpx.AsyncClient(timeout=10.0)
         self._connected_event = asyncio.Event()
@@ -47,14 +48,14 @@ class HyperliquidClient:
         self._orderbook_listeners: List[Callable[[str, str, Dict[str, Any]], None]] = []
         self._mark_listeners: List[Callable[[str, float, Dict[str, Any]], None]] = []
         self._recv_task_market: Optional[asyncio.Task] = None
-        self._recv_task_books: Optional[asyncio.Task] = None
+        self._recv_tasks_books: Dict[str, asyncio.Task] = {}
         self._ws_runner_task_market: Optional[asyncio.Task] = None
-        self._ws_runner_task_books: Optional[asyncio.Task] = None
+        self._ws_runner_tasks_books: Dict[str, asyncio.Task] = {}
         self._spot_subscriptions: set[str] = set()
         self._perp_subscriptions: set[str] = set()
         self._mark_subscriptions: set[str] = set()
         self._sent_subscriptions_market: set[str] = set()
-        self._sent_subscriptions_books: set[str] = set()
+        self._sent_subscriptions_books: Dict[str, set[str]] = {}
         self._all_mids_subscribed = False
         self._raw_sample_logged = 0
         self._first_market_logged = False
@@ -66,13 +67,16 @@ class HyperliquidClient:
         self._first_data_event = asyncio.Event()
         self._connected_event_market = asyncio.Event()
         self._connected_event_books = asyncio.Event()
+        self._connected_event_books.set()
+        self._books_connected_events: Dict[str, asyncio.Event] = {}
         self._logger = logger
         self._subscribe_delay_ms = self._get_subscribe_delay_ms()
         self._stopped = False
         self._reconnect_delay = 2
-        self._books_last_l2book: Optional[float] = None
-        self._books_watchdog_task: Optional[asyncio.Task] = None
+        self._books_last_l2book: Dict[str, Optional[float]] = {}
+        self._books_watchdog_tasks: Dict[str, asyncio.Task] = {}
         self._books_idle_timeout = BOOKS_IDLE_TIMEOUT
+        self._books_cap_warned = False
 
     @property
     def rest_base(self) -> str:
@@ -112,12 +116,7 @@ class HyperliquidClient:
 
     async def connect_ws(self) -> None:
         async with self._ws_lock:
-            if (
-                self._ws_runner_task_market
-                and not self._ws_runner_task_market.done()
-                and self._ws_runner_task_books
-                and not self._ws_runner_task_books.done()
-            ):
+            if self._ws_runner_task_market and not self._ws_runner_task_market.done():
                 await self._connected_event.wait()
                 return
             self._stopped = False
@@ -132,17 +131,6 @@ class HyperliquidClient:
                         connected_event=self._connected_event_market,
                     )
                 )
-            if not self._ws_runner_task_books or self._ws_runner_task_books.done():
-                self._ws_runner_task_books = asyncio.create_task(
-                    self._run_ws_loop(
-                        name="WS_BOOKS",
-                        subscribe_fn=self._resubscribe_books,
-                        set_ws_attr="_ws_books",
-                        recv_task_attr="_recv_task_books",
-                        sent_set=self._sent_subscriptions_books,
-                        connected_event=self._connected_event_books,
-                    )
-                )
         await self._connected_event.wait()
 
     async def subscribe_orderbooks(self, symbol_map: Dict[str, str], kind: str = "spot") -> None:
@@ -155,23 +143,51 @@ class HyperliquidClient:
         if kind == "perp" and os.getenv("HL_DISABLE_PERP_L2BOOK", "0") == "1":
             logger.info("[WS_FEED] HL_DISABLE_PERP_L2BOOK=1 -> skipping perp l2Book")
             return
-        await self._connected_event_books.wait()
-        if not self._ws_books:
-            raise RuntimeError("WebSocket not connected")
-        if self._sent_subscriptions_books:
-            logger.info("[WS_BOOKS][WS_FEED] single l2Book already subscribed; skipping")
+
+        items = list(symbol_map.items())
+        if len(items) > BOOKS_SOCKET_CAP and not self._books_cap_warned:
+            self._logger.warning(
+                "[WS_BOOKS][WS_FEED] requested %s assets but cap=%s; only first %s will start",
+                len(items),
+                BOOKS_SOCKET_CAP,
+                BOOKS_SOCKET_CAP,
+            )
+            self._books_cap_warned = True
+        items = items[:BOOKS_SOCKET_CAP]
+
+        for coin, base in items:
+            if kind == "perp":
+                perp_key = f"perp:{coin}"
+                self._perp_subscriptions.add(perp_key)
+                self._perp_symbol_to_base[coin] = base
+            else:
+                spot_key = f"spot:{coin}"
+                self._spot_subscriptions.add(spot_key)
+                self._spot_symbol_to_base[coin] = base
+
+            await self._ensure_books_runner(coin)
+            await self._books_connected_events[coin].wait()
+            if coin not in self._sent_subscriptions_books:
+                self._sent_subscriptions_books[coin] = set()
+            sent_set = self._sent_subscriptions_books[coin]
+            if sent_set:
+                logger.info("[WS_BOOKS_%s][WS_FEED] single l2Book already subscribed; skipping", coin)
+                continue
+            logger.info("[WS_BOOKS_%s] subscribing single l2Book: %s", coin, coin)
+            await self._subscribe_books(coin, kind, coin)
+
+    async def _ensure_books_runner(self, asset: str) -> None:
+        if asset not in self._books_connected_events:
+            self._books_connected_events[asset] = asyncio.Event()
+        if asset not in self._sent_subscriptions_books:
+            self._sent_subscriptions_books[asset] = set()
+        runner = self._ws_runner_tasks_books.get(asset)
+        if runner and not runner.done():
             return
-        payload_coin = "BTC"
-        perp_key = f"perp:{payload_coin}"
-        spot_key = f"spot:{payload_coin}"
-        if kind == "perp":
-            self._perp_subscriptions.add(perp_key)
-            self._perp_symbol_to_base[payload_coin] = payload_coin
-        else:
-            self._spot_subscriptions.add(spot_key)
-            self._spot_symbol_to_base[payload_coin] = payload_coin
-        logger.info("[WS_BOOKS] subscribing single l2Book: BTC")
-        await self._subscribe_books(payload_coin, kind)
+        self._stopped = False
+        self._connected_event_books.clear()
+        self._update_connected_event()
+        self._ws_runner_tasks_books[asset] = asyncio.create_task(self._run_book_ws_loop(asset))
 
     async def subscribe_mark_prices(self, symbol_map: Dict[str, str]) -> None:
         await self._connected_event_market.wait()
@@ -243,6 +259,7 @@ class HyperliquidClient:
         ws: WebSocketClientProtocol,
         name: str,
         on_first_message: Optional[Callable[[], None]] = None,
+        asset: Optional[str] = None,
     ) -> None:
         sample_limit = 5
         try:
@@ -283,8 +300,12 @@ class HyperliquidClient:
                         list(msg.keys()),
                         snippet[:500],
                     )
-                if name == "WS_BOOKS" and self._is_l2book(msg):
-                    self._books_last_l2book = time.monotonic()
+                if name.startswith("WS_BOOKS") and self._is_l2book(msg):
+                    payload = self._extract_payload(msg)
+                    coin = payload.get("coin") or payload.get("asset") or msg.get("coin") or msg.get("asset")
+                    target_asset = coin if isinstance(coin, str) else asset
+                    if target_asset:
+                        self._books_last_l2book[target_asset] = time.monotonic()
                 self._handle_ws_message(msg)
         except websockets.ConnectionClosed as e:
             self._logger.warning(
@@ -297,6 +318,79 @@ class HyperliquidClient:
         except Exception:
             self._logger.exception("[%s] recv loop crashed", name)
             raise
+
+    async def _run_book_ws_loop(self, asset: str) -> None:
+        name = f"WS_BOOKS_{asset}"
+        reconnect_attempt = 0
+        books_failure_streak = 0
+        while not self._stopped:
+            await self._reset_book_connection(asset)
+            if reconnect_attempt:
+                self._logger.info("[%s] reconnect attempt %s", name, reconnect_attempt)
+            sleep_delay = self._reconnect_delay
+            try:
+                self._logger.info("Connecting to Hyperliquid WebSocket (%s): %s", name, self.websocket_url)
+                ws = await websockets.connect(
+                    self.websocket_url,
+                    ping_interval=5,
+                    ping_timeout=5,
+                    close_timeout=5,
+                )
+                self._ws_books[asset] = ws
+                self._books_connected_events[asset].set()
+                self._update_books_connected_event()
+                self._logger.info("[%s] WebSocket connected", name)
+
+                def _reset_backoff() -> None:
+                    nonlocal books_failure_streak
+                    books_failure_streak = 0
+
+                recv_task = asyncio.create_task(
+                    self._ws_recv_loop(ws, name, _reset_backoff, asset)
+                )
+                self._recv_tasks_books[asset] = recv_task
+                self._books_last_l2book[asset] = time.monotonic()
+                await self._cancel_books_watchdog(asset)
+                self._books_watchdog_tasks[asset] = asyncio.create_task(
+                    self._books_idle_watchdog(ws, asset)
+                )
+                await self._resubscribe_books(asset, reconnect_attempt > 0)
+                await recv_task
+            except websockets.ConnectionClosed as e:
+                self._books_connected_events[asset].clear()
+                self._connected_event_books.clear()
+                self._connected_event.clear()
+                books_failure_streak += 1
+                base_delay = min(self._reconnect_delay * (2 ** (books_failure_streak - 1)), 30)
+                sleep_delay = min(base_delay * random.uniform(0.8, 1.2), 30)
+                self._logger.warning(
+                    "[%s] reconnect after %s, sleeping %.1fs (attempt %s)",
+                    name,
+                    type(e).__name__,
+                    sleep_delay,
+                    books_failure_streak,
+                )
+                self._update_books_connected_event()
+            except Exception as e:  # pragma: no cover - defensive
+                self._books_connected_events[asset].clear()
+                self._connected_event_books.clear()
+                self._connected_event.clear()
+                books_failure_streak += 1
+                base_delay = min(self._reconnect_delay * (2 ** (books_failure_streak - 1)), 30)
+                sleep_delay = min(base_delay * random.uniform(0.8, 1.2), 30)
+                self._logger.warning(
+                    "[%s] reconnect after %s, sleeping %.1fs (attempt %s)",
+                    name,
+                    type(e).__name__,
+                    sleep_delay,
+                    books_failure_streak,
+                )
+                self._logger.debug("[%s] error detail: %s", name, e)
+                self._update_books_connected_event()
+            reconnect_attempt += 1
+            if self._stopped:
+                break
+            await asyncio.sleep(sleep_delay)
 
     async def _run_ws_loop(
         self,
@@ -339,12 +433,6 @@ class HyperliquidClient:
                     self._ws_recv_loop(ws, name, first_message_reset)
                 )
                 setattr(self, recv_task_attr, recv_task)
-                if name == "WS_BOOKS":
-                    self._books_last_l2book = time.monotonic()
-                    await self._cancel_books_watchdog()
-                    self._books_watchdog_task = asyncio.create_task(
-                        self._books_idle_watchdog(ws)
-                    )
                 await subscribe_fn(reconnect_attempt > 0)
                 await recv_task
             except websockets.ConnectionClosed as e:
@@ -412,9 +500,45 @@ class HyperliquidClient:
             await ws.close()
         setattr(self, ws_attr, None)
 
+    async def _reset_book_connection(self, asset: str) -> None:
+        event = self._books_connected_events.setdefault(asset, asyncio.Event())
+        event.clear()
+        self._connected_event_books.clear()
+        self._connected_event.clear()
+        sent_set = self._sent_subscriptions_books.get(asset)
+        if sent_set is not None:
+            sent_set.clear()
+        recv_task = self._recv_tasks_books.get(asset)
+        if recv_task and not recv_task.done():
+            recv_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await recv_task
+        self._recv_tasks_books.pop(asset, None)
+        await self._cancel_books_watchdog(asset)
+        ws = self._ws_books.get(asset)
+        if ws and not ws.closed:
+            await ws.close()
+        self._ws_books.pop(asset, None)
+        self._books_last_l2book.pop(asset, None)
+        self._update_books_connected_event()
+
     def _update_connected_event(self) -> None:
         if self._connected_event_market.is_set() and self._connected_event_books.is_set():
             self._connected_event.set()
+        else:
+            self._connected_event.clear()
+
+    def _update_books_connected_event(self) -> None:
+        active_assets = [asset for asset, task in self._ws_runner_tasks_books.items() if task and not task.done()]
+        if not active_assets:
+            self._connected_event_books.set()
+        else:
+            ready = all(self._books_connected_events.get(asset) and self._books_connected_events[asset].is_set() for asset in active_assets)
+            if ready:
+                self._connected_event_books.set()
+            else:
+                self._connected_event_books.clear()
+        self._update_connected_event()
 
     async def _resubscribe_market(self, is_reconnect: bool) -> None:
         if self._mark_symbol_to_base:
@@ -422,13 +546,19 @@ class HyperliquidClient:
         if is_reconnect and self._mark_symbol_to_base:
             self._logger.info("[WS_MARKET][WS_FEED] resubscribed after reconnect")
 
-    async def _resubscribe_books(self, is_reconnect: bool) -> None:
-        if self._spot_symbol_to_base:
-            await self.subscribe_orderbooks(self._spot_symbol_to_base, kind="spot")
-        if self._perp_symbol_to_base:
-            await self.subscribe_orderbooks(self._perp_symbol_to_base, kind="perp")
-        if is_reconnect and (self._spot_symbol_to_base or self._perp_symbol_to_base):
-            self._logger.info("[WS_BOOKS][WS_FEED] resubscribed after reconnect")
+    async def _resubscribe_books(self, asset: str, is_reconnect: bool) -> None:
+        symbol_entry = None
+        kind = "spot"
+        if asset in self._spot_symbol_to_base:
+            symbol_entry = {asset: self._spot_symbol_to_base[asset]}
+            kind = "spot"
+        if asset in self._perp_symbol_to_base:
+            symbol_entry = {asset: self._perp_symbol_to_base[asset]}
+            kind = "perp"
+        if symbol_entry:
+            await self.subscribe_orderbooks(symbol_entry, kind=kind)
+        if is_reconnect and symbol_entry:
+            self._logger.info("[WS_BOOKS_%s][WS_FEED] resubscribed after reconnect", asset)
 
     # Parsing helpers -------------------------------------------------------
 
@@ -495,7 +625,7 @@ class HyperliquidClient:
             name="WS_MARKET",
         )
 
-    async def _subscribe_books(self, payload_coin: str, kind: str) -> None:
+    async def _subscribe_books(self, payload_coin: str, kind: str, asset: str) -> None:
         if os.getenv("HL_DISABLE_L2BOOK", "0") == "1":
             logger.info("[WS_FEED] HL_DISABLE_L2BOOK=1 -> skipping l2Book subscriptions")
             return
@@ -509,15 +639,25 @@ class HyperliquidClient:
         await self._send_subscribe_ws(
             sub_payload,
             ws_attr="_ws_books",
-            sent_set=self._sent_subscriptions_books,
-            name="WS_BOOKS",
+            sent_set=self._sent_subscriptions_books[asset],
+            name=f"WS_BOOKS_{asset}",
+            asset=asset,
         )
         await asyncio.sleep(self._subscribe_delay_ms / 1000.0)
 
     async def _send_subscribe_ws(
-        self, sub: Dict[str, Any], ws_attr: str, sent_set: set[str], name: str
+        self,
+        sub: Dict[str, Any],
+        ws_attr: str,
+        sent_set: set[str],
+        name: str,
+        asset: Optional[str] = None,
     ) -> None:
-        ws = getattr(self, ws_attr)
+        ws = None
+        if ws_attr == "_ws_books" and asset:
+            ws = self._ws_books.get(asset)
+        else:
+            ws = getattr(self, ws_attr)
         if not ws:
             raise RuntimeError(f"WebSocket not connected for {name}")
         key = json.dumps(sub, sort_keys=True)
@@ -705,32 +845,37 @@ class HyperliquidClient:
 
     async def close(self) -> None:
         self._stopped = True
-        for task in (self._ws_runner_task_market, self._ws_runner_task_books):
+        tasks_to_cancel = [self._ws_runner_task_market, *self._ws_runner_tasks_books.values()]
+        for task in tasks_to_cancel:
             if task and not task.done():
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
-        for task in (self._recv_task_market, self._recv_task_books):
-            if task and not task.done():
+        recv_tasks = [self._recv_task_market, *self._recv_tasks_books.values()]
+        for task in recv_tasks:
+            if task and not getattr(task, "done", lambda: True)():
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
-        for ws in (self._ws_market, self._ws_books):
+        for ws in [self._ws_market, *self._ws_books.values()]:
             if ws and not ws.closed:
                 await ws.close()
         await self._cancel_books_watchdog()
         await self._session.aclose()
 
-    async def _books_idle_watchdog(self, ws: WebSocketClientProtocol) -> None:
+    async def _books_idle_watchdog(self, ws: WebSocketClientProtocol, asset: Optional[str] = None) -> None:
         try:
             while True:
                 await asyncio.sleep(1)
-                if self._books_last_l2book is None:
+                last_seen = self._books_last_l2book.get(asset) if asset else None
+                if last_seen is None:
                     continue
-                idle = time.monotonic() - self._books_last_l2book
+                idle = time.monotonic() - last_seen
                 if idle > self._books_idle_timeout:
+                    name = f"WS_BOOKS_{asset}" if asset else "WS_BOOKS"
                     self._logger.warning(
-                        "[WS_BOOKS] idle watchdog: no l2Book for %.1fs -> closing ws to reconnect",
+                        "[%s] idle watchdog: no l2Book for %.1fs -> closing ws to reconnect",
+                        name,
                         idle,
                     )
                     with contextlib.suppress(Exception):
@@ -740,16 +885,26 @@ class HyperliquidClient:
         except asyncio.CancelledError:
             raise
         finally:
-            if self._books_watchdog_task is asyncio.current_task():
-                self._books_watchdog_task = None
+            if asset:
+                task = self._books_watchdog_tasks.get(asset)
+                if task is asyncio.current_task():
+                    self._books_watchdog_tasks[asset] = None  # type: ignore[assignment]
 
-    async def _cancel_books_watchdog(self) -> None:
-        task = self._books_watchdog_task
-        if task and not task.done():
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        self._books_watchdog_task = None
+    async def _cancel_books_watchdog(self, asset: Optional[str] = None) -> None:
+        if asset:
+            task = self._books_watchdog_tasks.get(asset)
+            if task and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            self._books_watchdog_tasks[asset] = None  # type: ignore[assignment]
+        else:
+            for task_asset, task in list(self._books_watchdog_tasks.items()):
+                if task and not task.done():
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+                self._books_watchdog_tasks[task_asset] = None  # type: ignore[assignment]
 
     def _normalize_spot_symbol(self, base: str) -> str:
         # Hyperliquid spot l2Book expects the base coin, not a "BASE/USDC" pair string.
@@ -770,4 +925,5 @@ async def stream_orderbooks(client: HyperliquidClient, coins: Iterable[str]):
     spot_map = {client._normalize_spot_symbol(coin): coin for coin in coins}
     await client.subscribe_orderbooks(spot_map, kind="spot")
     if client._ws_books:
-        await client._ws_recv_loop(client._ws_books, "WS_BOOKS")
+        asset, ws = next(iter(client._ws_books.items()))
+        await client._ws_recv_loop(ws, f"WS_BOOKS_{asset}", asset=asset)
