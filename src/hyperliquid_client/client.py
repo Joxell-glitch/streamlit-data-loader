@@ -46,7 +46,7 @@ class HyperliquidClient:
         self._spot_subscriptions: set[str] = set()
         self._perp_subscriptions: set[str] = set()
         self._mark_subscriptions: set[str] = set()
-        self._sent_subscriptions: set[object] = set()
+        self._sent_subscriptions: set[str] = set()
         self._all_mids_subscribed = False
         self._raw_sample_logged = 0
         self._first_market_logged = False
@@ -57,6 +57,7 @@ class HyperliquidClient:
         self._mark_ok: Dict[str, bool] = {}
         self._first_data_event = asyncio.Event()
         self._logger = logger
+        self._subscribe_delay_ms = self._get_subscribe_delay_ms()
 
     @property
     def rest_base(self) -> str:
@@ -135,7 +136,6 @@ class HyperliquidClient:
                 payload_coin = f"{payload_coin}/USDC"
 
             sub_payload: Dict[str, Any] = {"type": "l2Book", "coin": payload_coin}
-            sub_key = ("l2Book", payload_coin, kind)
             perp_key = f"perp:{payload_coin}"
             spot_key = f"spot:{payload_coin}"
             if kind == "perp":
@@ -144,11 +144,7 @@ class HyperliquidClient:
             else:
                 self._spot_subscriptions.add(spot_key)
                 self._spot_symbol_to_base[payload_coin] = base_asset
-            if sub_key in self._sent_subscriptions:
-                continue
             await self._send_subscribe(sub_payload)
-            self._sent_subscriptions.add(sub_key)
-            time.sleep(0.15)
 
     async def subscribe_mark_prices(self, symbol_map: Dict[str, str]) -> None:
         await self._connected_event.wait()
@@ -156,16 +152,11 @@ class HyperliquidClient:
             raise RuntimeError("WebSocket not connected")
         for coin, base in symbol_map.items():
             sub_payload = {"type": "activeAssetCtx", "coin": coin}
-            sub_key = json.dumps(sub_payload, sort_keys=True)
-            if sub_key in self._sent_subscriptions:
-                logger.info("Already subscribed (activeAssetCtx %s)", coin)
-                continue
 
+            sub_key = json.dumps(sub_payload, sort_keys=True)
             self._mark_subscriptions.add(sub_key)
             self._mark_symbol_to_base[coin] = base
             await self._send_subscribe(sub_payload)
-            self._sent_subscriptions.add(sub_key)
-            time.sleep(0.15)
 
     async def start_market_data(
         self,
@@ -335,9 +326,16 @@ class HyperliquidClient:
         await self._connected_event.wait()
         if not self._ws:
             raise RuntimeError("WebSocket not connected")
+        key = json.dumps(sub, sort_keys=True)
+        if key in self._sent_subscriptions:
+            logger.info("[WS_FEED] Already subscribed key=%s", key)
+            return
+        self._sent_subscriptions.add(key)
         payload = {"method": "subscribe", "subscription": sub}
+        logger.info("[WS_FEED] sent subscribe sub=%s", json.dumps(sub, sort_keys=True))
         logger.info("[WS_FEED][INFO] sending_subscribe payload=%s", json.dumps(payload))
         await self._ws.send(json.dumps(payload))
+        await asyncio.sleep(self._subscribe_delay_ms / 1000.0)
 
     def _handle_l2book(self, msg: Dict[str, Any]) -> None:
         payload = self._extract_payload(msg)
@@ -527,6 +525,12 @@ class HyperliquidClient:
 
     def _normalize_perp_symbol(self, base: str) -> str:
         return base.split("/")[0]
+
+    def _get_subscribe_delay_ms(self) -> int:
+        try:
+            return int(os.getenv("HL_SUBSCRIBE_DELAY_MS", "200"))
+        except ValueError:
+            return 200
 
 
 async def stream_orderbooks(client: HyperliquidClient, coins: Iterable[str]):
