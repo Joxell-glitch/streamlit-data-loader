@@ -120,6 +120,12 @@ class HyperliquidClient:
         if os.getenv("HL_DISABLE_L2BOOK", "0") == "1":
             logger.info("[WS_FEED] HL_DISABLE_L2BOOK=1 -> skipping l2Book subscriptions")
             return
+        if kind == "spot" and os.getenv("HL_DISABLE_SPOT_L2BOOK", "0") == "1":
+            logger.info("[WS_FEED] HL_DISABLE_SPOT_L2BOOK=1 -> skipping spot l2Book")
+            return
+        if kind == "perp" and os.getenv("HL_DISABLE_PERP_L2BOOK", "0") == "1":
+            logger.info("[WS_FEED] HL_DISABLE_PERP_L2BOOK=1 -> skipping perp l2Book")
+            return
         await self._connected_event.wait()
         if not self._ws:
             raise RuntimeError("WebSocket not connected")
