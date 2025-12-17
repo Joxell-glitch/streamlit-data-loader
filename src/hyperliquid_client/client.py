@@ -153,20 +153,20 @@ class HyperliquidClient:
         await self._connected_event_books.wait()
         if not self._ws_books:
             raise RuntimeError("WebSocket not connected")
-        for symbol, base_asset in symbol_map.items():
-            payload_coin = symbol if kind == "spot" else symbol
-            if kind == "spot" and "/" not in payload_coin:
-                payload_coin = f"{payload_coin}/USDC"
-
-            perp_key = f"perp:{payload_coin}"
-            spot_key = f"spot:{payload_coin}"
-            if kind == "perp":
-                self._perp_subscriptions.add(perp_key)
-                self._perp_symbol_to_base[payload_coin] = base_asset
-            else:
-                self._spot_subscriptions.add(spot_key)
-                self._spot_symbol_to_base[payload_coin] = base_asset
-            await self._subscribe_books(payload_coin, kind)
+        if self._sent_subscriptions_books:
+            logger.info("[WS_BOOKS][WS_FEED] single l2Book already subscribed; skipping")
+            return
+        payload_coin = "BTC"
+        perp_key = f"perp:{payload_coin}"
+        spot_key = f"spot:{payload_coin}"
+        if kind == "perp":
+            self._perp_subscriptions.add(perp_key)
+            self._perp_symbol_to_base[payload_coin] = payload_coin
+        else:
+            self._spot_subscriptions.add(spot_key)
+            self._spot_symbol_to_base[payload_coin] = payload_coin
+        logger.info("[WS_BOOKS] subscribing single l2Book: BTC")
+        await self._subscribe_books(payload_coin, kind)
 
     async def subscribe_mark_prices(self, symbol_map: Dict[str, str]) -> None:
         await self._connected_event_market.wait()
