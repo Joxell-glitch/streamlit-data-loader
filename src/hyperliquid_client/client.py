@@ -102,7 +102,10 @@ class HyperliquidClient:
                 try:
                     logger.info("Connecting to Hyperliquid WebSocket: %s", self.websocket_url)
                     self._ws = await websockets.connect(
-                        self.websocket_url, ping_interval=20, ping_timeout=20
+                        self.websocket_url,
+                        ping_interval=5,
+                        ping_timeout=5,
+                        close_timeout=5,
                     )
                     self._connected_event.set()
                     logger.info("WebSocket connected")
