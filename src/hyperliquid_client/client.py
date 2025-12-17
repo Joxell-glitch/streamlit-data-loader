@@ -43,6 +43,7 @@ class HyperliquidClient:
         self._orderbook_listeners: List[Callable[[str, str, Dict[str, Any]], None]] = []
         self._mark_listeners: List[Callable[[str, float, Dict[str, Any]], None]] = []
         self._recv_task: Optional[asyncio.Task] = None
+        self._ws_runner_task: Optional[asyncio.Task] = None
         self._spot_subscriptions: set[str] = set()
         self._perp_subscriptions: set[str] = set()
         self._mark_subscriptions: set[str] = set()
@@ -58,6 +59,8 @@ class HyperliquidClient:
         self._first_data_event = asyncio.Event()
         self._logger = logger
         self._subscribe_delay_ms = self._get_subscribe_delay_ms()
+        self._stopped = False
+        self._reconnect_delay = 2
 
     @property
     def rest_base(self) -> str:
@@ -97,25 +100,12 @@ class HyperliquidClient:
 
     async def connect_ws(self) -> None:
         async with self._ws_lock:
-            if self._ws and not self._ws.closed:
+            if self._ws_runner_task and not self._ws_runner_task.done():
+                await self._connected_event.wait()
                 return
-            backoff = 1
-            while True:
-                try:
-                    logger.info("Connecting to Hyperliquid WebSocket: %s", self.websocket_url)
-                    self._ws = await websockets.connect(
-                        self.websocket_url,
-                        ping_interval=5,
-                        ping_timeout=5,
-                        close_timeout=5,
-                    )
-                    self._connected_event.set()
-                    logger.info("WebSocket connected")
-                    return
-                except Exception as exc:  # pragma: no cover - defensive
-                    logger.warning("WebSocket connection failed: %s", exc)
-                    await asyncio.sleep(backoff)
-                    backoff = min(backoff * 2, 30)
+            self._stopped = False
+            self._ws_runner_task = asyncio.create_task(self._ws_run_loop())
+        await self._connected_event.wait()
 
     async def subscribe_orderbooks(self, symbol_map: Dict[str, str], kind: str = "spot") -> None:
         if os.getenv("HL_DISABLE_L2BOOK", "0") == "1":
@@ -173,8 +163,6 @@ class HyperliquidClient:
         spot_symbols = {self._normalize_spot_symbol(base): base for base in coins_spot_list}
         perp_symbols = {self._normalize_perp_symbol(base): base for base in coins_perp_list}
         await self.connect_ws()
-        if not self._recv_task or self._recv_task.done():
-            self._recv_task = asyncio.create_task(self._ws_recv_loop())
         if coins_mark_list:
             mark_symbols = {self._normalize_perp_symbol(base): base for base in coins_mark_list}
             await self.subscribe_mark_prices(mark_symbols)
@@ -265,6 +253,67 @@ class HyperliquidClient:
         except Exception:
             self._logger.exception("[WS_FEED] recv loop crashed")
             raise
+
+    async def _ws_run_loop(self) -> None:
+        reconnect_attempt = 0
+        while not self._stopped:
+            await self._reset_ws_state()
+            if reconnect_attempt:
+                self._logger.info("[WS_FEED] reconnect attempt %s", reconnect_attempt)
+            try:
+                await self._connect_once()
+                self._recv_task = asyncio.create_task(self._ws_recv_loop())
+                await self._resubscribe_all(reconnect_attempt > 0)
+                await self._recv_task
+            except websockets.ConnectionClosed as e:
+                self._connected_event.clear()
+                self._logger.warning(
+                    "[WS_FEED] WS closed (%s). Reconnecting in %ss...",
+                    e,
+                    self._reconnect_delay,
+                )
+            except Exception as e:  # pragma: no cover - defensive
+                self._connected_event.clear()
+                self._logger.error("[WS_FEED] WS crash: %s", e)
+            reconnect_attempt += 1
+            if self._stopped:
+                break
+            await asyncio.sleep(self._reconnect_delay)
+
+    async def _reset_ws_state(self) -> None:
+        self._connected_event.clear()
+        self._sent_subscriptions.clear()
+        if self._recv_task and not self._recv_task.done():
+            self._recv_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._recv_task
+        self._recv_task = None
+        if self._ws and not self._ws.closed:
+            await self._ws.close()
+        self._ws = None
+
+    async def _connect_once(self) -> None:
+        self._logger.info("Connecting to Hyperliquid WebSocket: %s", self.websocket_url)
+        self._ws = await websockets.connect(
+            self.websocket_url,
+            ping_interval=5,
+            ping_timeout=5,
+            close_timeout=5,
+        )
+        self._connected_event.set()
+        self._logger.info("WebSocket connected")
+
+    async def _resubscribe_all(self, is_reconnect: bool) -> None:
+        if self._mark_symbol_to_base:
+            await self.subscribe_mark_prices(self._mark_symbol_to_base)
+        if self._spot_symbol_to_base:
+            await self.subscribe_orderbooks(self._spot_symbol_to_base, kind="spot")
+        if self._perp_symbol_to_base:
+            await self.subscribe_orderbooks(self._perp_symbol_to_base, kind="perp")
+        if is_reconnect and (
+            self._mark_symbol_to_base or self._spot_symbol_to_base or self._perp_symbol_to_base
+        ):
+            self._logger.info("[WS_FEED] resubscribed after reconnect")
 
     # Parsing helpers -------------------------------------------------------
 
@@ -511,6 +560,11 @@ class HyperliquidClient:
         return best
 
     async def close(self) -> None:
+        self._stopped = True
+        if self._ws_runner_task and not self._ws_runner_task.done():
+            self._ws_runner_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._ws_runner_task
         if self._recv_task and not self._recv_task.done():
             self._recv_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
