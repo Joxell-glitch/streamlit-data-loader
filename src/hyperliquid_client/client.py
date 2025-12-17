@@ -10,7 +10,14 @@ from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional
 
 import httpx
 import websockets
-from websockets.client import WebSocketClientProtocol
+
+# websockets moved WebSocketClientProtocol from websockets.legacy.client to
+# websockets.client in newer releases; try the modern path first and fall back
+# for older versions to avoid runtime import errors across versions.
+try:  # websockets >= 10
+    from websockets.client import WebSocketClientProtocol
+except ImportError:  # websockets < 10 compatibility
+    from websockets.legacy.client import WebSocketClientProtocol  # type: ignore[attr-defined]
 
 from src.config.models import APISettings
 from src.core.logging import get_logger
