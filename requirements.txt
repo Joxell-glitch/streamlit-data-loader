@@ -1,7 +1,8 @@
 streamlit
 streamlit-autorefresh
-requests
-pandas
+requests>=2.27,<3
+pandas<2.2
+numpy<1.25
 twilio
 altair
 sqlalchemy>=1.4,<2.0
