@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import json
 import time
 from typing import Any, Callable, Dict, Iterable, List, Optional
@@ -116,6 +117,9 @@ class HyperliquidClient:
                     backoff = min(backoff * 2, 30)
 
     async def subscribe_orderbooks(self, symbol_map: Dict[str, str], kind: str = "spot") -> None:
+        if os.getenv("HL_DISABLE_L2BOOK", "0") == "1":
+            logger.info("[WS_FEED] HL_DISABLE_L2BOOK=1 -> skipping l2Book subscriptions")
+            return
         await self._connected_event.wait()
         if not self._ws:
             raise RuntimeError("WebSocket not connected")
