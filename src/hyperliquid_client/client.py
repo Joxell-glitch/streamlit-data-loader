@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import os
 import json
+import random
 import time
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional
 
@@ -232,7 +233,12 @@ class HyperliquidClient:
         if not handled:
             logger.debug("[WS_FEED][DEBUG] Unrecognized message: %s", msg)
 
-    async def _ws_recv_loop(self, ws: WebSocketClientProtocol, name: str) -> None:
+    async def _ws_recv_loop(
+        self,
+        ws: WebSocketClientProtocol,
+        name: str,
+        on_first_message: Optional[Callable[[], None]] = None,
+    ) -> None:
         sample_limit = 5
         try:
             while True:
@@ -244,6 +250,10 @@ class HyperliquidClient:
                     logger.warning("WebSocket receive error (%s): %s", name, exc)
                     await asyncio.sleep(0.5)
                     continue
+
+                if on_first_message:
+                    on_first_message()
+                    on_first_message = None
 
                 msg = self._ensure_dict(raw_msg)
                 if isinstance(msg, dict):
@@ -291,10 +301,12 @@ class HyperliquidClient:
         connected_event: asyncio.Event,
     ) -> None:
         reconnect_attempt = 0
+        books_failure_streak = 0
         while not self._stopped:
             await self._reset_connection(set_ws_attr, recv_task_attr, sent_set, connected_event)
             if reconnect_attempt:
                 self._logger.info("[%s] reconnect attempt %s", name, reconnect_attempt)
+            sleep_delay = self._reconnect_delay
             try:
                 self._logger.info("Connecting to Hyperliquid WebSocket (%s): %s", name, self.websocket_url)
                 ws = await websockets.connect(
@@ -307,27 +319,62 @@ class HyperliquidClient:
                 connected_event.set()
                 self._update_connected_event()
                 self._logger.info("[%s] WebSocket connected", name)
-                recv_task = asyncio.create_task(self._ws_recv_loop(ws, name))
+                first_message_reset: Optional[Callable[[], None]] = None
+                if name == "WS_BOOKS":
+
+                    def _reset_backoff() -> None:
+                        nonlocal books_failure_streak
+                        books_failure_streak = 0
+
+                    first_message_reset = _reset_backoff
+
+                recv_task = asyncio.create_task(
+                    self._ws_recv_loop(ws, name, first_message_reset)
+                )
                 setattr(self, recv_task_attr, recv_task)
                 await subscribe_fn(reconnect_attempt > 0)
                 await recv_task
             except websockets.ConnectionClosed as e:
                 connected_event.clear()
                 self._connected_event.clear()
-                self._logger.warning(
-                    "[%s] WS closed (%s). Reconnecting in %ss...",
-                    name,
-                    e,
-                    self._reconnect_delay,
-                )
+                if name == "WS_BOOKS":
+                    books_failure_streak += 1
+                    base_delay = min(self._reconnect_delay * (2 ** (books_failure_streak - 1)), 30)
+                    sleep_delay = min(base_delay * random.uniform(0.8, 1.2), 30)
+                    self._logger.warning(
+                        "[%s] reconnect after %s, sleeping %.1fs (attempt %s)",
+                        name,
+                        type(e).__name__,
+                        sleep_delay,
+                        books_failure_streak,
+                    )
+                else:
+                    self._logger.warning(
+                        "[%s] WS closed (%s). Reconnecting in %ss...",
+                        name,
+                        e,
+                        self._reconnect_delay,
+                    )
             except Exception as e:  # pragma: no cover - defensive
                 connected_event.clear()
                 self._connected_event.clear()
-                self._logger.error("[%s] WS crash: %s", name, e)
+                if name == "WS_BOOKS":
+                    books_failure_streak += 1
+                    base_delay = min(self._reconnect_delay * (2 ** (books_failure_streak - 1)), 30)
+                    sleep_delay = min(base_delay * random.uniform(0.8, 1.2), 30)
+                    self._logger.warning(
+                        "[%s] reconnect after %s, sleeping %.1fs (attempt %s)",
+                        name,
+                        type(e).__name__,
+                        sleep_delay,
+                        books_failure_streak,
+                    )
+                else:
+                    self._logger.error("[%s] WS crash: %s", name, e)
             reconnect_attempt += 1
             if self._stopped:
                 break
-            await asyncio.sleep(self._reconnect_delay)
+            await asyncio.sleep(sleep_delay)
 
     async def _reset_connection(
         self,
