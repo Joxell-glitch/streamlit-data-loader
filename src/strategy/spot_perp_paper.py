@@ -240,7 +240,12 @@ class SpotPerpPaperEngine:
         if kind == "perp":
             self.asset_state[coin].perp = book
             if self.update_counts[coin]["perp"] == 0:
-                logger.info("[SPOT_PERP][INFO] first_perp_l2_received asset=%s", coin)
+                logger.info(
+                    "[SPOT_PERP][INFO] first_perp_l2_received asset=%s bid=%.6f ask=%.6f",
+                    coin,
+                    book.best_bid,
+                    book.best_ask,
+                )
             if book.has_liquidity():
                 self.update_counts[coin]["perp"] += 1
             if ts - self._last_update_log[coin]["perp"] >= 1:
