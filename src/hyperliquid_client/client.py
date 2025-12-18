@@ -904,10 +904,10 @@ class HyperliquidClient:
         is_perp = is_perp or msg.get("isPerp") or (isinstance(subscription, dict) and subscription.get("isPerp"))
         if is_perp:
             return "perp", self._perp_symbol_to_base.get(coin, coin), "payload_flag"
-        if coin in self._spot_symbol_to_base:
-            return "spot", self._spot_symbol_to_base[coin], "spot_map"
         if coin in self._perp_symbol_to_base:
             return "perp", self._perp_symbol_to_base[coin], "perp_map"
+        if coin in self._spot_symbol_to_base:
+            return "spot", self._spot_symbol_to_base[coin], "spot_map"
         if isinstance(coin, str) and coin.endswith("/USDC"):
             return "spot", coin.split("/")[0], "symbol_suffix"
         return "spot", coin, "default"
