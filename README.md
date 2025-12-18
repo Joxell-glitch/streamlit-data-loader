@@ -19,7 +19,7 @@ This repository contains an asynchronous Python 3.8+ paper-trading bot for **tri
 - Access to the internet to reach Hyperliquid APIs (for live streaming). Offline tests use mocks.
 
 ## Installazione riproducibile (Python 3.8)
-I lock sono conservati in `requirements-lock.txt`. Installa sempre da lì, non dalle dipendenze dirette.
+`requirements-lock.txt` contiene **solo le dipendenze runtime** del bot (niente tool di sviluppo), così l'installazione non viene bloccata da versioni di linter/formattatori non compatibili con Python 3.8. Usa sempre questo file per ambienti di esecuzione.
 
 ### Setup pulito
 ```bash
@@ -33,6 +33,12 @@ python -m pip install --upgrade pip setuptools wheel
 ```bash
 python -m pip install -r requirements-lock.txt
 python -m pip check
+```
+
+### Dipendenze di sviluppo (opzionali)
+Se vuoi eseguire lint, type-check o test, installa anche i tool DEV (compatibili con Python 3.8) dopo il runtime:
+```bash
+python -m pip install -r requirements-dev.txt
 ```
 
 ### Rigenerare il lock (solo quando serve)

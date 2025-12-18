@@ -1,0 +1,15 @@
+# Development-only dependencies (linters, type checkers, tests).
+# Install on top of requirements-lock.txt when working on the codebase.
+-r requirements-lock.txt
+
+# Formatting and linting
+black==24.4.2
+isort==5.13.2
+ruff==0.5.7
+
+# Type checking
+mypy==1.10.1
+pyright==1.1.377
+
+# Testing
+pytest==8.3.3
