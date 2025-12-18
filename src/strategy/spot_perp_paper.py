@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -72,6 +73,13 @@ class SpotPerpPaperEngine:
         self._heartbeat_interval = 10
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._last_heartbeat = time.time()
+        self._metrics_interval = float(os.getenv("SPOT_PERP_METRICS_INTERVAL", "30"))
+        self._last_metrics_log = time.time()
+        self.opportunities_seen = 0
+        self.trades_executed = 0
+        self.pnl_estimated = 0.0
+        self._pnl_peak = 0.0
+        self.max_drawdown = 0.0
         self.update_counts: Dict[str, Dict[str, int]] = {
             asset: {"spot": 0, "perp": 0, "mark": 0} for asset in self.assets
         }
@@ -102,14 +110,16 @@ class SpotPerpPaperEngine:
 
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(stop_event))
 
-        while self._running and (not stop_event or not stop_event.is_set()):
-            await asyncio.sleep(1)
-        self._running = False
-
-        if self._heartbeat_task:
-            self._heartbeat_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._heartbeat_task
+        try:
+            while self._running and (not stop_event or not stop_event.is_set()):
+                await asyncio.sleep(1)
+        finally:
+            self._running = False
+            if self._heartbeat_task:
+                self._heartbeat_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._heartbeat_task
+            self._log_summary("run_forever_exit")
 
     def _on_orderbook(self, kind: str, coin: str, ob_norm: Dict[str, Any]) -> None:
         if coin not in self.asset_state:
@@ -175,6 +185,9 @@ class SpotPerpPaperEngine:
         while self._running and (not stop_event or not stop_event.is_set()):
             await asyncio.sleep(self._heartbeat_interval)
             self._log_heartbeat()
+            if time.time() - self._last_metrics_log >= self._metrics_interval:
+                self._last_metrics_log = time.time()
+                self._log_metrics()
 
     def _log_heartbeat(self) -> None:
         self._last_heartbeat = time.time()
@@ -224,6 +237,35 @@ class SpotPerpPaperEngine:
                     perp_ok,
                     mark_ok,
                 )
+
+    def _log_metrics(self) -> None:
+        reconnect_counts = getattr(self.client, "reconnect_counts", {})
+        logger.info(
+            (
+                "[SPOT_PERP][METRICS] interval=%ss opportunities_seen=%d trades_executed=%d "
+                "pnl_est=%.4f drawdown=%.4f ws_reconnects=%s"
+            ),
+            self._metrics_interval,
+            self.opportunities_seen,
+            self.trades_executed,
+            self.pnl_estimated,
+            self.max_drawdown,
+            reconnect_counts,
+        )
+        for asset, state in self.asset_state.items():
+            logger.info(
+                (
+                    "[SPOT_PERP][LAST_PRICES] asset=%s spot_bid=%.6f spot_ask=%.6f perp_bid=%.6f "
+                    "perp_ask=%.6f mark=%.6f mark_ok=%s"
+                ),
+                asset,
+                state.spot.best_bid,
+                state.spot.best_ask,
+                state.perp.best_bid,
+                state.perp.best_ask,
+                state.mark_price,
+                state.mark_price > 0,
+            )
 
     def _evaluate_and_record(self, asset: str) -> None:
         state = self.asset_state[asset]
@@ -388,6 +430,48 @@ class SpotPerpPaperEngine:
                 )
             )
             s.commit()
+        self.opportunities_seen += 1
+        self.trades_executed += 1
+        self.pnl_estimated += pnl_net_estimated
+        self._pnl_peak = max(self._pnl_peak, self.pnl_estimated)
+        self.max_drawdown = max(self.max_drawdown, self._pnl_peak - self.pnl_estimated)
+
+    async def shutdown(self) -> None:
+        """Stop background loops and emit a final summary for observability."""
+
+        self._running = False
+        if self._heartbeat_task and not self._heartbeat_task.done():
+            self._heartbeat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._heartbeat_task
+        self._log_summary()
+
+    def _log_summary(self, reason: str = "shutdown") -> None:
+        logger.info(
+            (
+                "[SPOT_PERP][SUMMARY] reason=%s opportunities_seen=%d trades_executed=%d "
+                "pnl_est=%.4f max_drawdown=%.4f ws_reconnects=%s"
+            ),
+            reason,
+            self.opportunities_seen,
+            self.trades_executed,
+            self.pnl_estimated,
+            self.max_drawdown,
+            getattr(self.client, "reconnect_counts", {}),
+        )
+        for asset, state in self.asset_state.items():
+            logger.info(
+                (
+                    "[SPOT_PERP][SUMMARY_PRICES] asset=%s spot_bid=%.6f spot_ask=%.6f "
+                    "perp_bid=%.6f perp_ask=%.6f mark=%.6f"
+                ),
+                asset,
+                state.spot.best_bid,
+                state.spot.best_ask,
+                state.perp.best_bid,
+                state.perp.best_ask,
+                state.mark_price,
+            )
 
 
 async def run_spot_perp_engine(

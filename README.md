@@ -18,22 +18,20 @@ This repository contains an asynchronous Python 3.8+ paper-trading bot for **tri
 - Python 3.8
 - Access to the internet to reach Hyperliquid APIs (for live streaming). Offline tests use mocks.
 
-## Installazione riproducibile (Python 3.8)
-`requirements-lock.txt` contiene **solo le dipendenze runtime** del bot (niente tool di sviluppo), così l'installazione non viene bloccata da versioni di linter/formattatori non compatibili con Python 3.8. Usa sempre questo file per ambienti di esecuzione.
+## Install (runtime) – Python 3.8
+`requirements-lock.txt` contiene **solo le dipendenze runtime** del bot (niente tool di sviluppo) ed è pensato per Python 3.8. Usa sempre questo file sugli ambienti che devono restare accesi a lungo.
 
-### Setup pulito
 ```bash
 rm -rf .venv
 python3.8 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip setuptools wheel
-```
-
-### Install dal lock
-```bash
 python -m pip install -r requirements-lock.txt
 python -m pip check
 ```
+
+- Il database SQLite di default è `data/arb_bot.sqlite` (viene creato automaticamente). Puoi leggerlo con un qualsiasi client SQLite o `python -m sqlite3 data/arb_bot.sqlite ".tables"`.
+- Il file di configurazione di riferimento è `config/config.yaml` (puoi copiarlo da `config/config.example.yaml`).
 
 ### Dipendenze di sviluppo (opzionali)
 Se vuoi eseguire lint, type-check o test, installa anche i tool DEV (compatibili con Python 3.8) dopo il runtime:
@@ -120,10 +118,30 @@ python -m pip check
 ## Bootstrap (one-liner)
 `rm -rf .venv && python3.8 -m venv .venv && source .venv/bin/activate && python -m pip install --upgrade pip setuptools wheel && python -m pip install -r requirements-lock.txt && python -m pip check && python -m src.cli.run_spot_perp_paper --assets BTC`
 
+## Run paper (BTC,ETH,SOL)
+Streaming spot/perp data and persisting paper opportunities (no live orders):
+
+```bash
+python -m src.cli.run_spot_perp_paper --config config/config.yaml --assets BTC,ETH,SOL
+```
+
+- Log metrics/heartbeats every few seconds, reconnects with exponential backoff, and persist opportunities to `data/arb_bot.sqlite`.
+- Health/status only (non-trading):
+  ```bash
+  python -m src.cli.run_spot_perp_paper --config config/config.yaml --assets BTC,ETH,SOL --status-only
+  ```
+  Useful to verify config + DB path and how many `spot_perp_opportunities` rows are present without opening websockets.
+
 ## Configuration
 - `config/config.yaml` holds defaults. Environment variables (from `.env`) override file values.
 - Example keys include network selection, quote asset, edge thresholds, position sizing, whitelists/blacklists, DB backend, and logging settings.
 - See `config/config.example.yaml` and `.env.example` for templates.
+
+## Troubleshooting (Python 3.8)
+- **DB non creato:** assicurati che `database.backend` sia `sqlite` e che il percorso `data/arb_bot.sqlite` sia scrivibile. Il comando `python -m src.cli.run_spot_perp_paper --config config/config.yaml --status-only` mostra percorso, dimensione file e numero di `spot_perp_opportunities`.
+- **Disconnessioni WebSocket:** il client riconnette con backoff esponenziale e logga il motivo. Se vedi troppi `ws_reconnects`, controlla la connettività della VM e il firewall.
+- **Metriche troppo rare/dense:** cambia l'intervallo dei log periodici impostando la variabile `SPOT_PERP_METRICS_INTERVAL` (es. `export SPOT_PERP_METRICS_INTERVAL=15`).
+- **Problemi TLS o certificati su Python 3.8:** aggiorna `certifi` dentro l'ambiente virtuale (`python -m pip install --upgrade certifi`) e riprova.
 
 ## Next steps to go live
 - Implement a real order execution layer using Hyperliquid authenticated endpoints and handle signatures.

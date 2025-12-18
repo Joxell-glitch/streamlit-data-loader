@@ -84,6 +84,11 @@ class HyperliquidClient:
         self._books_watchdog_tasks: Dict[str, asyncio.Task] = {}
         self._books_idle_timeout = BOOKS_IDLE_TIMEOUT
         self._books_cap_warned = False
+        self._reconnect_counters: Dict[str, Any] = {
+            "market": 0,
+            "books": {},
+            "books_total": 0,
+        }
 
     @property
     def rest_base(self) -> str:
@@ -321,6 +326,10 @@ class HyperliquidClient:
                 getattr(e, "code", None),
                 getattr(e, "reason", None),
             )
+            if name.startswith("WS_BOOKS"):
+                self._register_reconnect("books", asset, getattr(e, "code", None))
+            else:
+                self._register_reconnect("market", None, getattr(e, "code", None))
             raise
         except Exception:
             self._logger.exception("[%s] recv loop crashed", name)
@@ -368,6 +377,7 @@ class HyperliquidClient:
                 self._connected_event_books.clear()
                 self._connected_event.clear()
                 books_failure_streak += 1
+                self._register_reconnect("books", asset, type(e).__name__)
                 base_delay = min(self._reconnect_delay * (2 ** (books_failure_streak - 1)), 30)
                 sleep_delay = min(base_delay * random.uniform(0.8, 1.2), 30)
                 self._logger.warning(
@@ -383,6 +393,7 @@ class HyperliquidClient:
                 self._connected_event_books.clear()
                 self._connected_event.clear()
                 books_failure_streak += 1
+                self._register_reconnect("books", asset, type(e).__name__)
                 base_delay = min(self._reconnect_delay * (2 ** (books_failure_streak - 1)), 30)
                 sleep_delay = min(base_delay * random.uniform(0.8, 1.2), 30)
                 self._logger.warning(
@@ -447,6 +458,7 @@ class HyperliquidClient:
                 self._connected_event.clear()
                 if name == "WS_BOOKS":
                     books_failure_streak += 1
+                    self._register_reconnect("books", None, type(e).__name__)
                     base_delay = min(self._reconnect_delay * (2 ** (books_failure_streak - 1)), 30)
                     sleep_delay = min(base_delay * random.uniform(0.8, 1.2), 30)
                     self._logger.warning(
@@ -468,6 +480,7 @@ class HyperliquidClient:
                 self._connected_event.clear()
                 if name == "WS_BOOKS":
                     books_failure_streak += 1
+                    self._register_reconnect("books", None, type(e).__name__)
                     base_delay = min(self._reconnect_delay * (2 ** (books_failure_streak - 1)), 30)
                     sleep_delay = min(base_delay * random.uniform(0.8, 1.2), 30)
                     self._logger.warning(
@@ -869,6 +882,42 @@ class HyperliquidClient:
                 await ws.close()
         await self._cancel_books_watchdog()
         await self._session.aclose()
+
+    # ------------------------------------------------------------------
+    # Metrics / status helpers
+
+    def _register_reconnect(self, kind: str, asset: Optional[str], reason: Any) -> None:
+        if kind == "market":
+            self._reconnect_counters["market"] += 1
+            self._logger.info(
+                "[WS_%s] disconnect detected (reason=%s) total_reconnects=%s",
+                kind.upper(),
+                reason,
+                self._reconnect_counters["market"],
+            )
+            return
+
+        if kind == "books":
+            asset_key = asset or "_shared"
+            self._reconnect_counters["books_total"] += 1
+            books_map: Dict[str, int] = self._reconnect_counters.setdefault("books", {})
+            books_map[asset_key] = books_map.get(asset_key, 0) + 1
+            self._logger.info(
+                "[WS_BOOKS_%s] disconnect detected (reason=%s) total_reconnects=%s",
+                asset_key,
+                reason,
+                books_map[asset_key],
+            )
+
+    @property
+    def reconnect_counts(self) -> Dict[str, Any]:
+        """Return a snapshot of reconnect counters for monitoring/metrics."""
+
+        return {
+            "market": self._reconnect_counters.get("market", 0),
+            "books_total": self._reconnect_counters.get("books_total", 0),
+            "books": dict(self._reconnect_counters.get("books", {})),
+        }
 
     async def _books_idle_watchdog(self, ws: WebSocketClientProtocol, asset: Optional[str] = None) -> None:
         try:
