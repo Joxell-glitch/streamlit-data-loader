@@ -51,3 +51,7 @@ validation:
   sample_interval_ms: 250
   stats_log_interval_sec: 5
   sqlite_flush_every_n: 50
+
+strategy:
+  would_trade: false
+  trace_every_seconds: 10

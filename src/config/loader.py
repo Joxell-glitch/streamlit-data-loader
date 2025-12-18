@@ -13,6 +13,7 @@ from .models import (
     LoggingSettings,
     ObservabilitySettings,
     Settings,
+    StrategySettings,
     TradingSettings,
     ValidationSettings,
 )
@@ -74,6 +75,12 @@ def load_config(config_path: str) -> Settings:
         sqlite_flush_every_n=int(validation_raw.get("sqlite_flush_every_n", 50)),
     )
 
+    strategy_raw = raw.get("strategy", {}) or {}
+    strategy = StrategySettings(
+        would_trade=str(strategy_raw.get("would_trade", False)).lower() in {"1", "true", "yes", "on"},
+        trace_every_seconds=int(strategy_raw.get("trace_every_seconds", 10)),
+    )
+
     return Settings(
         network=raw["network"],
         api=api,
@@ -81,6 +88,7 @@ def load_config(config_path: str) -> Settings:
         database=db,
         logging=logging,
         observability=observability,
+        strategy=strategy,
         validation=validation,
     )
 
@@ -143,6 +151,12 @@ def apply_env_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
     )
     raw["validation"]["sqlite_flush_every_n"] = int(
         env.get("VALIDATION_SQLITE_FLUSH_EVERY_N", raw["validation"].get("sqlite_flush_every_n", 50))
+    )
+
+    raw.setdefault("strategy", {})
+    raw["strategy"]["would_trade"] = env.get("STRATEGY_WOULD_TRADE", raw["strategy"].get("would_trade", False))
+    raw["strategy"]["trace_every_seconds"] = int(
+        env.get("STRATEGY_TRACE_EVERY_SECONDS", raw["strategy"].get("trace_every_seconds", 10))
     )
 
     return raw
