@@ -157,6 +157,7 @@ class SpotPerpPaperEngine:
         self._last_heartbeat = time.time()
         self._metrics_interval = float(os.getenv("SPOT_PERP_METRICS_INTERVAL", "30"))
         self._last_metrics_log = time.time()
+        self._validation_first_tick_logged = False
         self.opportunities_seen = 0
         self.trades_executed = 0
         self.pnl_estimated = 0.0
@@ -194,26 +195,22 @@ class SpotPerpPaperEngine:
         )
         await self.client.start_market_data(self.assets, self.assets, self.assets)
 
-        validation_msg = (
-            "[VALIDATION] enabled=true sample_interval_ms=%s flush_every_n=%s stats_log_interval_sec=%s"
-            if self.validation_settings.enabled
-            else "[VALIDATION] enabled=false (reason=%s)"
-        )
-        if self.validation_settings.enabled:
-            logger.info(
-                validation_msg,
-                self.validation_settings.sample_interval_ms,
-                self.validation_settings.sqlite_flush_every_n,
-                self.validation_settings.stats_log_interval_sec,
-            )
-        else:
-            reason = "disabled" if self._validation_config_provided else "missing_config"
-            logger.info(validation_msg, reason)
-
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(stop_event))
         self._feed_health_task = asyncio.create_task(self._feed_health_loop(stop_event))
         if self._validation_recorder:
             self._validation_task = asyncio.create_task(self._validation_loop(stop_event))
+            task_name = (
+                self._validation_task.get_name()
+                if hasattr(self._validation_task, "get_name")
+                else str(self._validation_task)
+            )
+            logger.info(
+                "[VALIDATION] started task=%s sample_interval_ms=%s",
+                task_name,
+                self.validation_settings.sample_interval_ms,
+            )
+        else:
+            logger.info("[VALIDATION] disabled")
 
         try:
             while self._running and (not stop_event or not stop_event.is_set()):
@@ -316,6 +313,9 @@ class SpotPerpPaperEngine:
         try:
             while self._running and (not stop_event or not stop_event.is_set()):
                 start = time.time()
+                if not self._validation_first_tick_logged:
+                    logger.info("[VALIDATION] first_tick")
+                    self._validation_first_tick_logged = True
                 self._capture_validation_samples()
                 if time.time() - last_stats_log >= self.validation_settings.stats_log_interval_sec:
                     last_stats_log = time.time()
