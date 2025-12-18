@@ -72,6 +72,12 @@ class ValidationSettings:
 
 
 @dataclass
+class StrategySettings:
+    would_trade: bool = False
+    trace_every_seconds: int = 10
+
+
+@dataclass
 class Settings:
     network: str
     api: APISettings
@@ -79,4 +85,5 @@ class Settings:
     database: DatabaseSettings
     logging: LoggingSettings
     observability: ObservabilitySettings
+    strategy: StrategySettings = field(default_factory=StrategySettings)
     validation: ValidationSettings = field(default_factory=ValidationSettings)

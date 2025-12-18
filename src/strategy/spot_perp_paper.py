@@ -137,6 +137,8 @@ class SpotPerpPaperEngine:
         feed_health_settings: Optional[FeedHealthSettings] = None,
         feed_health_tracker: Optional[FeedHealthTracker] = None,
         validation_settings: Optional[ValidationSettings] = None,
+        would_trade: bool = False,
+        trace_every_seconds: int = 10,
     ) -> None:
         self.client = client
         self.assets = list(assets)
@@ -186,6 +188,18 @@ class SpotPerpPaperEngine:
         if self.validation_settings.enabled:
             self._validation_recorder = ValidationRecorder(self.db_session_factory, self.validation_settings)
         self._last_spot_diag_log: Dict[str, float] = {asset: 0.0 for asset in self.assets}
+        self.would_trade = would_trade
+        self.trace_every_seconds = float(trace_every_seconds)
+        self._trace_state: Dict[str, Dict[str, Any]] = {
+            asset: {
+                "last_log": 0.0,
+                "last_ready": False,
+                "last_reason": "INIT",
+                "trace_emitted": 0,
+                "ready_transitions": 0,
+            }
+            for asset in self.assets
+        }
 
     async def run_forever(self, stop_event: Optional[asyncio.Event] = None) -> None:
         self._running = True
@@ -193,6 +207,11 @@ class SpotPerpPaperEngine:
             "[SPOT_PERP][INFO] engine_start assets=%s log_every_seconds=%s",
             self.assets,
             self._heartbeat_interval,
+        )
+        logger.info(
+            "[MODE] would_trade=%s trace_every_seconds=%.1f",
+            self.would_trade,
+            self.trace_every_seconds,
         )
         await self.client.start_market_data(self.assets, self.assets, self.assets)
 
@@ -504,22 +523,64 @@ class SpotPerpPaperEngine:
             f"stale={snapshot.get('stale')} crossed={snapshot.get('crossed')} out_of_sync={snapshot.get('out_of_sync')}"
         )
 
+    def _evaluate_gates(
+        self, asset: str, snapshot: Dict[str, Any], state: AssetState
+    ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
+        """Evaluate readiness gates for an asset and provide trace-friendly details."""
+
+        gates = {
+            "has_spot_book": state.spot.has_liquidity(),
+            "has_perp_book": state.perp.has_liquidity(),
+            "not_incomplete": not (snapshot.get("spot_incomplete") or snapshot.get("perp_incomplete")),
+            "not_stale": not snapshot.get("stale"),
+            "not_crossed": not snapshot.get("crossed"),
+            "not_out_of_sync": not snapshot.get("out_of_sync"),
+            "has_mark": state.mark_price > 0,
+        }
+
+        reason: Optional[str] = None
+        if not gates["has_mark"]:
+            reason = "SKIP_NO_BOOK"
+        elif not gates["has_spot_book"] or not gates["has_perp_book"]:
+            reason = "SKIP_NO_BOOK"
+        elif not gates["not_incomplete"]:
+            reason = "SKIP_INCOMPLETE"
+        elif not gates["not_stale"]:
+            reason = "SKIP_STALE"
+        elif not gates["not_out_of_sync"]:
+            reason = "SKIP_OUT_OF_SYNC"
+        elif not gates["not_crossed"]:
+            reason = "SKIP_INVALID_BBO"
+
+        details = {
+            "gates": gates,
+            "prices": {
+                "spot_bid": state.spot.best_bid,
+                "spot_ask": state.spot.best_ask,
+                "perp_bid": state.perp.best_bid,
+                "perp_ask": state.perp.best_ask,
+                "mark": state.mark_price if state.mark_price > 0 else 0.0,
+            },
+            "ages": {
+                "spot_age_ms": snapshot.get("spot_age_ms"),
+                "perp_age_ms": snapshot.get("perp_age_ms"),
+            },
+            "integrity": {
+                "dup": snapshot.get("duplicate_events"),
+                "out_of_sync_count": snapshot.get("out_of_sync_count"),
+                "book_incomplete": snapshot.get("book_incomplete"),
+                "ws_msgs": snapshot.get("ws_msgs_total"),
+            },
+        }
+
+        ready = reason is None
+        return ready, reason, details
+
     def _determine_skip_reason(
         self, asset: str, snapshot: Dict[str, Any], state: AssetState
     ) -> Optional[str]:
-        if state.mark_price <= 0:
-            return "SKIP_NO_BOOK"
-        if not state.spot.has_liquidity() or not state.perp.has_liquidity():
-            return "SKIP_NO_BOOK"
-        if snapshot.get("spot_incomplete") or snapshot.get("perp_incomplete"):
-            return "SKIP_INCOMPLETE"
-        if snapshot.get("stale"):
-            return "SKIP_STALE"
-        if snapshot.get("out_of_sync"):
-            return "SKIP_OUT_OF_SYNC"
-        if snapshot.get("crossed"):
-            return "SKIP_INVALID_BBO"
-        return None
+        ready, reason, _ = self._evaluate_gates(asset, snapshot, state)
+        return None if ready else reason
 
     def _log_strategy_skip(self, asset: str, reason: str, snapshot: Dict[str, Any]) -> None:
         interval = self.feed_health.settings.log_interval_sec if self.feed_health else 1.0
@@ -542,6 +603,77 @@ class SpotPerpPaperEngine:
             state.spot.best_ask,
             state.perp.best_bid,
             state.perp.best_ask,
+        )
+
+    def _should_log_trace(self, asset: str, ready: bool, reason: Optional[str]) -> bool:
+        state = self._trace_state[asset]
+        now = time.time()
+        interval_elapsed = now - state["last_log"] >= self.trace_every_seconds
+        reason_changed = (reason or "OK") != state["last_reason"]
+        ready_changed = ready != state["last_ready"]
+        if not (interval_elapsed or reason_changed or ready_changed):
+            return False
+        if ready_changed:
+            state["ready_transitions"] += 1
+        state["last_log"] = now
+        state["last_ready"] = ready
+        state["last_reason"] = reason or "OK"
+        state["trace_emitted"] += 1
+        return True
+
+    def _log_decision_trace(self, asset: str, ready: bool, reason: Optional[str], details: Dict[str, Any]) -> None:
+        if not self._should_log_trace(asset, ready, reason):
+            return
+        gates = ",".join([f"{k}={int(v)}" for k, v in details.get("gates", {}).items()])
+        prices_dict = details.get("prices", {})
+        prices = (
+            f"spot_bid={prices_dict.get('spot_bid', 0):.6f}/spot_ask={prices_dict.get('spot_ask', 0):.6f} "
+            f"perp_bid={prices_dict.get('perp_bid', 0):.6f}/perp_ask={prices_dict.get('perp_ask', 0):.6f} "
+            f"mark={prices_dict.get('mark', 0):.6f}"
+        )
+        ages_dict = details.get("ages", {})
+        ages = f"spot_age_ms={self._format_age_ms(ages_dict.get('spot_age_ms'))} perp_age_ms={self._format_age_ms(ages_dict.get('perp_age_ms'))}"
+        integrity_dict = details.get("integrity", {})
+        integrity = (
+            f"dup={integrity_dict.get('dup')} out_of_sync_count={integrity_dict.get('out_of_sync_count')} "
+            f"book_incomplete={integrity_dict.get('book_incomplete')} ws_msgs={integrity_dict.get('ws_msgs')}"
+        )
+        counters = self._trace_state[asset]
+        logger.info(
+            (
+                "[DECISION_TRACE] asset=%s ready=%d skip_reason=%s gates=%s prices=%s ages=%s "
+                "integrity=%s trace_emitted=%d ready_transitions=%d last_reason=%s"
+            ),
+            asset,
+            1 if ready else 0,
+            reason or "OK",
+            gates,
+            prices,
+            ages,
+            integrity,
+            counters["trace_emitted"],
+            counters["ready_transitions"],
+            counters["last_reason"],
+        )
+
+    def _log_would_trade(
+        self,
+        asset: str,
+        direction: Optional[str] = None,
+        expected_edge_bp: Optional[float] = None,
+        note: str = "",
+    ) -> None:
+        if not self.would_trade:
+            return
+        # WOULD_TRADE keeps evaluation visible without altering execution behavior.
+        direction_label = direction or "N/A"
+        edge_label = f"{expected_edge_bp:.2f}" if expected_edge_bp is not None else "N/A"
+        logger.info(
+            "[WOULD_TRADE] asset=%s action=%s expected_edge_bp=%s note=%s",
+            asset,
+            direction_label,
+            edge_label,
+            note or "evaluation_not_implemented",
         )
 
     def _log_metrics(self) -> None:
@@ -576,7 +708,9 @@ class SpotPerpPaperEngine:
     def _evaluate_and_record(self, asset: str) -> None:
         state = self.asset_state[asset]
         snapshot = self.feed_health.build_asset_snapshot(asset)
-        reason: Optional[str] = self._determine_skip_reason(asset, snapshot, state)
+        ready, reason, details = self._evaluate_gates(asset, snapshot, state)
+        # Decision trace keeps gating visibility deterministic for each asset.
+        self._log_decision_trace(asset, ready, reason, details)
         if reason:
             self._log_strategy_skip(asset, reason, snapshot)
             return
@@ -621,6 +755,12 @@ class SpotPerpPaperEngine:
             state.mark_price,
             spread_gross,
             pnl_net,
+        )
+        self._log_would_trade(
+            asset,
+            direction=direction,
+            expected_edge_bp=spread_gross * 10000 if spread_gross is not None else None,
+            note=f"pnl_net_est={pnl_net:.6f}",
         )
 
         if spread_gross <= 0 or pnl_net <= 0:
@@ -796,6 +936,8 @@ async def run_spot_perp_engine(
         feed_health_settings=feed_health_settings,
         feed_health_tracker=feed_health_tracker,
         validation_settings=settings.validation,
+        would_trade=settings.strategy.would_trade,
+        trace_every_seconds=settings.strategy.trace_every_seconds,
     )
     stop_event = asyncio.Event()
 

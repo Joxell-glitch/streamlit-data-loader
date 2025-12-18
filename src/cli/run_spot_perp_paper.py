@@ -17,9 +17,20 @@ from src.observability.feed_health import FeedHealthTracker
 logger = get_logger(__name__)
 
 
-async def _run_engine(config_path: str, debug_feeds: bool = False, assets_arg: Optional[str] = None) -> None:
+async def _run_engine(
+    config_path: str,
+    debug_feeds: bool = False,
+    assets_arg: Optional[str] = None,
+    would_trade_override: Optional[bool] = None,
+    trace_every_seconds_override: Optional[int] = None,
+) -> None:
     settings = load_config(config_path)
     setup_logging(settings.logging)
+
+    if would_trade_override is not None:
+        settings.strategy.would_trade = would_trade_override
+    if trace_every_seconds_override is not None:
+        settings.strategy.trace_every_seconds = trace_every_seconds_override
 
     if debug_feeds:
         root_logger = logging.getLogger()
@@ -61,6 +72,8 @@ async def _run_engine(config_path: str, debug_feeds: bool = False, assets_arg: O
         feed_health_settings=settings.observability.feed_health,
         feed_health_tracker=feed_health,
         validation_settings=settings.validation,
+        would_trade=settings.strategy.would_trade,
+        trace_every_seconds=settings.strategy.trace_every_seconds,
     )
 
     stop_event = asyncio.Event()
@@ -93,6 +106,17 @@ def main(config_path: Optional[str] = "config/config.yaml") -> None:
         action="store_true",
         help="Log a health/status snapshot without starting the trading engine",
     )
+    parser.add_argument(
+        "--would-trade",
+        action="store_true",
+        help="Enable would-trade tracing without placing any orders",
+    )
+    parser.add_argument(
+        "--trace-every-seconds",
+        type=int,
+        default=None,
+        help="Minimum seconds between decision trace logs per asset",
+    )
     args = parser.parse_args()
 
     if args.status_only:
@@ -118,7 +142,15 @@ def main(config_path: Optional[str] = "config/config.yaml") -> None:
         )
         return
 
-    asyncio.run(_run_engine(args.config, debug_feeds=args.debug_feeds, assets_arg=args.assets))
+    asyncio.run(
+        _run_engine(
+            args.config,
+            debug_feeds=args.debug_feeds,
+            assets_arg=args.assets,
+            would_trade_override=args.would_trade,
+            trace_every_seconds_override=args.trace_every_seconds,
+        )
+    )
 
 
 if __name__ == "__main__":
