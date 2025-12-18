@@ -261,14 +261,14 @@ class SpotPerpPaperEngine:
             snapshot = self.feed_health.build_asset_snapshot(asset)
             logger.info(
                 (
-                    "[FEED_HEALTH] asset=%s spot_age_ms=%.1f perp_age_ms=%.1f "
+                    "[FEED_HEALTH] asset=%s spot_age_ms=%s perp_age_ms=%s "
                     "spot_bbo=%.6f/%.6f perp_bbo=%.6f/%.6f "
                     "spot_incomplete=%s perp_incomplete=%s stale=%s crossed=%s out_of_sync=%s "
                     "ws_msgs=%d dup=%d hb=%d book_incomplete=%d stale_book=%d crossed_book=%d out_of_sync_count=%d"
                 ),
                 asset,
-                snapshot["spot_age_ms"],
-                snapshot["perp_age_ms"],
+                self._format_age_ms(snapshot["spot_age_ms"]),
+                self._format_age_ms(snapshot["perp_age_ms"]),
                 snapshot["spot_bid"],
                 snapshot["spot_ask"],
                 snapshot["perp_bid"],
@@ -287,6 +287,12 @@ class SpotPerpPaperEngine:
                 snapshot["out_of_sync_count"],
             )
 
+    @staticmethod
+    def _format_age_ms(age: Optional[float]) -> str:
+        if age is None:
+            return "null"
+        return f"{age:.1f}"
+
     def _log_strategy_skip(self, asset: str, reason: str, snapshot: Dict[str, Any]) -> None:
         interval = self.feed_health.settings.log_interval_sec if self.feed_health else 1.0
         now = time.time()
@@ -297,13 +303,13 @@ class SpotPerpPaperEngine:
         state = self.asset_state[asset]
         logger.info(
             (
-                "[STRATEGY_SKIP] asset=%s reason=%s spot_age_ms=%.1f perp_age_ms=%.1f "
+                "[STRATEGY_SKIP] asset=%s reason=%s spot_age_ms=%s perp_age_ms=%s "
                 "spot_bbo=%.6f/%.6f perp_bbo=%.6f/%.6f"
             ),
             asset,
             reason,
-            snapshot.get("spot_age_ms", float("inf")),
-            snapshot.get("perp_age_ms", float("inf")),
+            self._format_age_ms(snapshot.get("spot_age_ms")),
+            self._format_age_ms(snapshot.get("perp_age_ms")),
             state.spot.best_bid,
             state.spot.best_ask,
             state.perp.best_bid,

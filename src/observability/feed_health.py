@@ -17,10 +17,10 @@ class BookHealth:
     incomplete: bool = False
     crossed: bool = False
 
-    def age_ms(self, now: Optional[float] = None) -> float:
+    def age_ms(self, now: Optional[float] = None) -> Optional[float]:
         now_ts = now or time.time()
         if not self.ts:
-            return float("inf")
+            return None
         return max(0.0, (now_ts - self.ts) * 1000.0)
 
 
@@ -84,7 +84,8 @@ class FeedHealthTracker:
         now = time.time()
         if target.incomplete:
             self.book_incomplete += 1
-        if target.age_ms(now) > self.settings.stale_ms:
+        age_now = target.age_ms(now)
+        if age_now is None or age_now > self.settings.stale_ms:
             health.stale = True
             self.stale_book += 1
         else:
@@ -113,12 +114,18 @@ class FeedHealthTracker:
         health = self.get_asset_health(asset)
         spot_age = health.spot.age_ms(now)
         perp_age = health.perp.age_ms(now)
-        stale_now = spot_age > self.settings.stale_ms or perp_age > self.settings.stale_ms
+        spot_never_received = health.spot.ts == 0.0
+        perp_never_received = health.perp.ts == 0.0
+        stale_now = (spot_age is None or spot_age > self.settings.stale_ms) or (
+            perp_age is None or perp_age > self.settings.stale_ms
+        )
         crossed = health.spot.crossed or health.perp.crossed
         return {
             "asset": asset,
             "spot_age_ms": spot_age,
             "perp_age_ms": perp_age,
+            "spot_never_received": spot_never_received,
+            "perp_never_received": perp_never_received,
             "spot_incomplete": health.spot.incomplete,
             "perp_incomplete": health.perp.incomplete,
             "stale": stale_now or health.stale,
