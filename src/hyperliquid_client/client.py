@@ -78,6 +78,8 @@ class HyperliquidClient:
         self._first_allmids_logged = False
         self._mark_first_logged: set[str] = set()
         self._mark_ok: Dict[str, bool] = {}
+        self._spot_first_valid_book_logged: set[str] = set()
+        self._l2book_level_format_warned: set[str] = set()
         self._first_data_event = asyncio.Event()
         self._connected_event_market = asyncio.Event()
         self._connected_event_books = asyncio.Event()
@@ -719,10 +721,23 @@ class HyperliquidClient:
             return
 
         levels = payload.get("levels") or payload
-        bids = levels.get("bids") if isinstance(levels, dict) else None
-        asks = levels.get("asks") if isinstance(levels, dict) else None
-        bids = bids if isinstance(bids, list) else payload.get("bids") if isinstance(payload.get("bids"), list) else []
-        asks = asks if isinstance(asks, list) else payload.get("asks") if isinstance(payload.get("asks"), list) else []
+        bids_source: Any = None
+        asks_source: Any = None
+
+        if isinstance(levels, dict):
+            bids_source = levels.get("bids")
+            asks_source = levels.get("asks")
+        elif isinstance(levels, (list, tuple)) and len(levels) >= 2:
+            bids_source, asks_source = levels[0], levels[1]
+        else:
+            if coin not in self._l2book_level_format_warned:
+                self._l2book_level_format_warned.add(coin)
+                logger.warning(
+                    "[WS_FEED][WARN] l2Book unexpected levels format coin=%s type=%s", coin, type(levels).__name__
+                )
+
+        bids = bids_source if isinstance(bids_source, list) else payload.get("bids") if isinstance(payload.get("bids"), list) else []
+        asks = asks_source if isinstance(asks_source, list) else payload.get("asks") if isinstance(payload.get("asks"), list) else []
 
         best_bid = self._best_price(bids, reverse=True)
         best_ask = self._best_price(asks, reverse=False)
@@ -751,6 +766,21 @@ class HyperliquidClient:
             self._orderbooks_perp[asset] = norm
         else:
             self._orderbooks_spot[asset] = norm
+
+            if (
+                asset not in self._spot_first_valid_book_logged
+                and len(bids) > 0
+                and len(asks) > 0
+                and best_bid > 0
+                and best_ask > 0
+            ):
+                self._spot_first_valid_book_logged.add(asset)
+                logger.info(
+                    "[WS_FEED][INFO] first_valid_spot_book asset=%s best_bid=%s best_ask=%s",
+                    asset,
+                    best_bid,
+                    best_ask,
+                )
 
         tracker = getattr(self, "feed_health_tracker", None)
         if tracker:
