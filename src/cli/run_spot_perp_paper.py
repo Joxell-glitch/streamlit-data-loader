@@ -42,6 +42,9 @@ async def _run_engine(config_path: str, debug_feeds: bool = False, assets_arg: O
 
     feed_health = FeedHealthTracker(settings.observability.feed_health)
     client = HyperliquidClient(settings.api, settings.network, feed_health_tracker=feed_health)
+    if not settings.validation.enabled:
+        logger.info("[VALIDATION] config disabled; forcing runtime validation harness on")
+        settings.validation.enabled = True
     session_factory = get_session(settings)
     engine = SpotPerpPaperEngine(
         client,
