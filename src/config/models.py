@@ -64,6 +64,14 @@ class ObservabilitySettings:
 
 
 @dataclass
+class ValidationSettings:
+    enabled: bool = False
+    sample_interval_ms: int = 250
+    stats_log_interval_sec: int = 5
+    sqlite_flush_every_n: int = 50
+
+
+@dataclass
 class Settings:
     network: str
     api: APISettings
@@ -71,3 +79,4 @@ class Settings:
     database: DatabaseSettings
     logging: LoggingSettings
     observability: ObservabilitySettings
+    validation: ValidationSettings = field(default_factory=ValidationSettings)

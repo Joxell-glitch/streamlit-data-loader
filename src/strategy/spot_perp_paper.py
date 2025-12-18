@@ -4,13 +4,14 @@ import asyncio
 import contextlib
 import os
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from src.config.loader import load_config
-from src.config.models import FeedHealthSettings, Settings, TradingSettings
+from src.config.models import FeedHealthSettings, Settings, TradingSettings, ValidationSettings
 from src.core.logging import get_logger
-from src.db.models import SpotPerpOpportunity
+from src.db.models import DecisionOutcome, DecisionSnapshot, SpotPerpOpportunity
 from src.db.session import get_session
 from src.hyperliquid_client.client import HyperliquidClient
 from src.observability.feed_health import FeedHealthTracker
@@ -46,6 +47,50 @@ class AssetState:
         return self.spot.has_liquidity() and self.perp.has_liquidity() and self.mark_price > 0
 
 
+class ValidationRecorder:
+    def __init__(self, session_factory, settings: ValidationSettings) -> None:
+        self.session_factory = session_factory
+        self.settings = settings
+        self._snapshots: List[DecisionSnapshot] = []
+        self._outcomes: List[DecisionOutcome] = []
+        self.total_rows = 0
+        self.reason_counts: Counter[str] = Counter()
+        self.outcome_counts: Counter[str] = Counter()
+
+    def record(
+        self,
+        snapshot: DecisionSnapshot,
+        outcome: DecisionOutcome,
+    ) -> None:
+        self._snapshots.append(snapshot)
+        self._outcomes.append(outcome)
+        self.total_rows += 1
+        self.reason_counts[outcome.reason] += 1
+        self.outcome_counts[outcome.outcome] += 1
+        if len(self._snapshots) >= max(1, self.settings.sqlite_flush_every_n):
+            self.flush()
+
+    def flush(self) -> None:
+        if not self._snapshots and not self._outcomes:
+            return
+        with self.session_factory() as session:
+            session.add_all(self._snapshots)
+            session.add_all(self._outcomes)
+            session.commit()
+        self._snapshots.clear()
+        self._outcomes.clear()
+
+    def log_stats(self) -> None:
+        top_reasons = ", ".join([f"{reason}={count}" for reason, count in self.reason_counts.most_common(3)])
+        logger.info(
+            "[VALIDATION_STATS] total_rows=%d would_trade=%d skip=%d top_reasons=%s",
+            self.total_rows,
+            self.outcome_counts.get("WOULD_TRADE", 0),
+            self.total_rows - self.outcome_counts.get("WOULD_TRADE", 0),
+            top_reasons or "n/a",
+        )
+
+
 class SpotPerpPaperEngine:
     """
     Paper engine that observes spot and perp books to estimate arbitrage edge.
@@ -64,10 +109,12 @@ class SpotPerpPaperEngine:
         taker_fee_perp: float = 0.0005,
         feed_health_settings: Optional[FeedHealthSettings] = None,
         feed_health_tracker: Optional[FeedHealthTracker] = None,
+        validation_settings: Optional[ValidationSettings] = None,
     ) -> None:
         self.client = client
         self.assets = list(assets)
         self.trading = trading
+        self.validation_settings = validation_settings or ValidationSettings()
         self.taker_fee_spot = taker_fee_spot
         self.taker_fee_perp = taker_fee_perp
         self.db_session_factory = db_session_factory
@@ -78,6 +125,7 @@ class SpotPerpPaperEngine:
         self._heartbeat_interval = 10
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._feed_health_task: Optional[asyncio.Task] = None
+        self._validation_task: Optional[asyncio.Task] = None
         self._last_heartbeat = time.time()
         self._metrics_interval = float(os.getenv("SPOT_PERP_METRICS_INTERVAL", "30"))
         self._last_metrics_log = time.time()
@@ -105,6 +153,9 @@ class SpotPerpPaperEngine:
         }
         self._last_skip_reason: Dict[str, str] = {asset: "" for asset in self.assets}
         self._state_log_interval = 10.0
+        self._validation_recorder: Optional[ValidationRecorder] = None
+        if self.validation_settings.enabled:
+            self._validation_recorder = ValidationRecorder(self.db_session_factory, self.validation_settings)
 
     async def run_forever(self, stop_event: Optional[asyncio.Event] = None) -> None:
         self._running = True
@@ -117,6 +168,8 @@ class SpotPerpPaperEngine:
 
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(stop_event))
         self._feed_health_task = asyncio.create_task(self._feed_health_loop(stop_event))
+        if self._validation_recorder:
+            self._validation_task = asyncio.create_task(self._validation_loop(stop_event))
 
         try:
             while self._running and (not stop_event or not stop_event.is_set()):
@@ -131,6 +184,10 @@ class SpotPerpPaperEngine:
                 self._feed_health_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await self._feed_health_task
+            if self._validation_task:
+                self._validation_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._validation_task
             self._log_summary("run_forever_exit")
 
     def _on_orderbook(self, kind: str, coin: str, ob_norm: Dict[str, Any]) -> None:
@@ -206,6 +263,21 @@ class SpotPerpPaperEngine:
         while self._running and (not stop_event or not stop_event.is_set()):
             await asyncio.sleep(interval)
             self._log_feed_health()
+
+    async def _validation_loop(self, stop_event: Optional[asyncio.Event]) -> None:
+        if not self._validation_recorder:
+            return
+        sample_interval = max(1, self.validation_settings.sample_interval_ms) / 1000.0
+        last_stats_log = time.time()
+        while self._running and (not stop_event or not stop_event.is_set()):
+            start = time.time()
+            self._capture_validation_samples()
+            if time.time() - last_stats_log >= self.validation_settings.stats_log_interval_sec:
+                last_stats_log = time.time()
+                self._validation_recorder.log_stats()
+            elapsed = time.time() - start
+            await asyncio.sleep(max(0.0, sample_interval - elapsed))
+        self._validation_recorder.flush()
 
     def _log_heartbeat(self) -> None:
         self._last_heartbeat = time.time()
@@ -287,11 +359,73 @@ class SpotPerpPaperEngine:
                 snapshot["out_of_sync_count"],
             )
 
+    def _capture_validation_samples(self) -> None:
+        if not self._validation_recorder:
+            return
+        ts_ms = int(time.time() * 1000)
+        for asset in self.assets:
+            snapshot = self.feed_health.build_asset_snapshot(asset)
+            state = self.asset_state[asset]
+            reason = self._determine_skip_reason(asset, snapshot, state)
+            outcome = "SKIP" if reason else "WOULD_TRADE"
+            detail = self._build_validation_detail(snapshot)
+            self._validation_recorder.record(
+                DecisionSnapshot(
+                    ts_ms=ts_ms,
+                    asset=asset,
+                    spot_bid=snapshot["spot_bid"],
+                    spot_ask=snapshot["spot_ask"],
+                    perp_bid=snapshot["perp_bid"],
+                    perp_ask=snapshot["perp_ask"],
+                    spot_age_ms=snapshot.get("spot_age_ms"),
+                    perp_age_ms=snapshot.get("perp_age_ms"),
+                    spot_incomplete=int(bool(snapshot.get("spot_incomplete"))),
+                    perp_incomplete=int(bool(snapshot.get("perp_incomplete"))),
+                    stale=int(bool(snapshot.get("stale"))),
+                    crossed=int(bool(snapshot.get("crossed"))),
+                    out_of_sync=int(bool(snapshot.get("out_of_sync"))),
+                ),
+                DecisionOutcome(
+                    ts_ms=ts_ms,
+                    asset=asset,
+                    outcome=outcome,
+                    reason=reason or "OK",
+                    detail=detail,
+                ),
+            )
+
     @staticmethod
     def _format_age_ms(age: Optional[float]) -> str:
         if age is None:
             return "null"
         return f"{age:.1f}"
+
+    def _build_validation_detail(self, snapshot: Dict[str, Any]) -> str:
+        return (
+            f"spot={snapshot['spot_bid']:.6f}/{snapshot['spot_ask']:.6f} "
+            f"perp={snapshot['perp_bid']:.6f}/{snapshot['perp_ask']:.6f} "
+            f"ages={self._format_age_ms(snapshot.get('spot_age_ms'))}/"
+            f"{self._format_age_ms(snapshot.get('perp_age_ms'))} "
+            f"incomplete={snapshot.get('spot_incomplete')}/{snapshot.get('perp_incomplete')} "
+            f"stale={snapshot.get('stale')} crossed={snapshot.get('crossed')} out_of_sync={snapshot.get('out_of_sync')}"
+        )
+
+    def _determine_skip_reason(
+        self, asset: str, snapshot: Dict[str, Any], state: AssetState
+    ) -> Optional[str]:
+        if state.mark_price <= 0:
+            return "SKIP_NO_BOOK"
+        if not state.spot.has_liquidity() or not state.perp.has_liquidity():
+            return "SKIP_NO_BOOK"
+        if snapshot.get("spot_incomplete") or snapshot.get("perp_incomplete"):
+            return "SKIP_INCOMPLETE"
+        if snapshot.get("stale"):
+            return "SKIP_STALE"
+        if snapshot.get("out_of_sync"):
+            return "SKIP_OUT_OF_SYNC"
+        if snapshot.get("crossed"):
+            return "SKIP_INVALID_BBO"
+        return None
 
     def _log_strategy_skip(self, asset: str, reason: str, snapshot: Dict[str, Any]) -> None:
         interval = self.feed_health.settings.log_interval_sec if self.feed_health else 1.0
@@ -348,21 +482,7 @@ class SpotPerpPaperEngine:
     def _evaluate_and_record(self, asset: str) -> None:
         state = self.asset_state[asset]
         snapshot = self.feed_health.build_asset_snapshot(asset)
-        reason: Optional[str] = None
-
-        if state.mark_price <= 0:
-            reason = "SKIP_NO_BOOK"
-        elif not state.spot.has_liquidity() or not state.perp.has_liquidity():
-            reason = "SKIP_NO_BOOK"
-        elif snapshot["spot_incomplete"] or snapshot["perp_incomplete"]:
-            reason = "SKIP_INCOMPLETE"
-        elif snapshot["stale"]:
-            reason = "SKIP_STALE"
-        elif snapshot["out_of_sync"]:
-            reason = "SKIP_OUT_OF_SYNC"
-        elif snapshot["crossed"]:
-            reason = "SKIP_INVALID_BBO"
-
+        reason: Optional[str] = self._determine_skip_reason(asset, snapshot, state)
         if reason:
             self._log_strategy_skip(asset, reason, snapshot)
             return
@@ -525,6 +645,12 @@ class SpotPerpPaperEngine:
             self._feed_health_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._feed_health_task
+        if self._validation_task and not self._validation_task.done():
+            self._validation_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._validation_task
+        if self._validation_recorder:
+            self._validation_recorder.flush()
         self._log_summary()
 
     def _log_summary(self, reason: str = "shutdown") -> None:
@@ -575,6 +701,7 @@ async def run_spot_perp_engine(
         taker_fee_perp=taker_fee_perp,
         feed_health_settings=feed_health_settings,
         feed_health_tracker=feed_health_tracker,
+        validation_settings=settings.validation,
     )
     stop_event = asyncio.Event()
 

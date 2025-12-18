@@ -50,6 +50,7 @@ async def _run_engine(config_path: str, debug_feeds: bool = False, assets_arg: O
         db_session_factory=session_factory,
         feed_health_settings=settings.observability.feed_health,
         feed_health_tracker=feed_health,
+        validation_settings=settings.validation,
     )
 
     stop_event = asyncio.Event()

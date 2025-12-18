@@ -14,6 +14,7 @@ from .models import (
     ObservabilitySettings,
     Settings,
     TradingSettings,
+    ValidationSettings,
 )
 
 ENV_PREFIX = ""
@@ -58,6 +59,21 @@ def load_config(config_path: str) -> Settings:
         feed_health=FeedHealthSettings(**feed_health_raw),
     )
 
+    validation_raw = raw.get("validation", {}) or {}
+    raw_enabled = validation_raw.get("enabled", False)
+    parsed_enabled = (
+        str(raw_enabled).lower() in {"1", "true", "yes", "on"}
+        if isinstance(raw_enabled, str)
+        else bool(raw_enabled)
+    )
+
+    validation = ValidationSettings(
+        enabled=parsed_enabled,
+        sample_interval_ms=int(validation_raw.get("sample_interval_ms", 250)),
+        stats_log_interval_sec=int(validation_raw.get("stats_log_interval_sec", 5)),
+        sqlite_flush_every_n=int(validation_raw.get("sqlite_flush_every_n", 50)),
+    )
+
     return Settings(
         network=raw["network"],
         api=api,
@@ -65,6 +81,7 @@ def load_config(config_path: str) -> Settings:
         database=db,
         logging=logging,
         observability=observability,
+        validation=validation,
     )
 
 
@@ -114,6 +131,18 @@ def apply_env_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
     )
     raw["feed_health"]["dedup_ttl_sec"] = int(
         env.get("FEED_HEALTH_DEDUP_TTL_SEC", raw["feed_health"].get("dedup_ttl_sec", 2))
+    )
+
+    raw.setdefault("validation", {})
+    raw["validation"]["enabled"] = env.get("VALIDATION_ENABLED", raw["validation"].get("enabled", False))
+    raw["validation"]["sample_interval_ms"] = int(
+        env.get("VALIDATION_SAMPLE_INTERVAL_MS", raw["validation"].get("sample_interval_ms", 250))
+    )
+    raw["validation"]["stats_log_interval_sec"] = int(
+        env.get("VALIDATION_STATS_LOG_INTERVAL_SEC", raw["validation"].get("stats_log_interval_sec", 5))
+    )
+    raw["validation"]["sqlite_flush_every_n"] = int(
+        env.get("VALIDATION_SQLITE_FLUSH_EVERY_N", raw["validation"].get("sqlite_flush_every_n", 50))
     )
 
     return raw

@@ -45,3 +45,9 @@ observability:
   log_top_n_each_sec: 60
   top_n: 10
   min_abs_profit_to_log: 0.0
+
+validation:
+  enabled: false
+  sample_interval_ms: 250
+  stats_log_interval_sec: 5
+  sqlite_flush_every_n: 50

@@ -121,3 +121,31 @@ class SpotPerpOpportunity(Base):
     fee_estimated = Column(Float)
     funding_estimated = Column(Float)
     pnl_net_estimated = Column(Float)
+
+
+class DecisionSnapshot(Base):
+    __tablename__ = "decision_snapshots"
+    id = Column(Integer, primary_key=True)
+    ts_ms = Column(Integer)
+    asset = Column(String, index=True)
+    spot_bid = Column(Float)
+    spot_ask = Column(Float)
+    perp_bid = Column(Float)
+    perp_ask = Column(Float)
+    spot_age_ms = Column(Float, nullable=True)
+    perp_age_ms = Column(Float, nullable=True)
+    spot_incomplete = Column(Integer)
+    perp_incomplete = Column(Integer)
+    stale = Column(Integer)
+    crossed = Column(Integer)
+    out_of_sync = Column(Integer)
+
+
+class DecisionOutcome(Base):
+    __tablename__ = "decision_outcomes"
+    id = Column(Integer, primary_key=True)
+    ts_ms = Column(Integer)
+    asset = Column(String, index=True)
+    outcome = Column(String)
+    reason = Column(String)
+    detail = Column(String, nullable=True)
