@@ -17,7 +17,7 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     return cursor.fetchone() is not None
 
 
-def analyze(path: str, since_minutes: int) -> Dict[str, Dict[str, int]]:
+def analyze(path: str, since_minutes: int):
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     try:
@@ -30,13 +30,17 @@ def analyze(path: str, since_minutes: int) -> Dict[str, Dict[str, int]]:
             "WHERE ts_ms >= ? GROUP BY outcome, reason",
             (since_ms,),
         ).fetchall()
+        stats_row = conn.execute(
+            "SELECT MIN(ts_ms) AS min_ts, MAX(ts_ms) AS max_ts, COUNT(*) as total "
+            "FROM decision_outcomes"
+        ).fetchone()
     finally:
         conn.close()
 
     totals: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for row in rows:
         totals[row["outcome"]][row["reason"]] = row["cnt"]
-    return totals
+    return totals, stats_row
 
 
 def main() -> None:
@@ -48,11 +52,15 @@ def main() -> None:
     settings = load_config(args.config)
     setup_logging(settings.logging)
     try:
-        totals = analyze(settings.database.sqlite_path, args.since_minutes)
+        totals, stats_row = analyze(settings.database.sqlite_path, args.since_minutes)
     except Exception as exc:  # pragma: no cover - CLI convenience
         print(f"[ANALYZE] error: {exc}")
         return
 
+    print(
+        f"[ANALYZE] db_path={settings.database.sqlite_path} min_ts_ms={stats_row['min_ts']} "
+        f"max_ts_ms={stats_row['max_ts']} total_rows={stats_row['total']}"
+    )
     overall = sum(sum(reason_counts.values()) for reason_counts in totals.values())
     print(f"[ANALYZE] rows={overall} window_minutes={args.since_minutes}")
     for outcome, reason_counts in totals.items():

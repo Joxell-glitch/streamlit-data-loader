@@ -60,4 +60,10 @@ def get_session(settings: Optional[Settings] = None):
         finally:
             session.close()
 
+    session_scope.db_path = (
+        settings.database.sqlite_path
+        if settings.database.backend == "sqlite"
+        else build_connection_string(settings)
+    )
+
     return session_scope

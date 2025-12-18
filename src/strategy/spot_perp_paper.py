@@ -54,6 +54,8 @@ class ValidationRecorder:
         self._snapshots: List[DecisionSnapshot] = []
         self._outcomes: List[DecisionOutcome] = []
         self.total_rows = 0
+        self.validation_written_total = 0
+        self.db_path = getattr(session_factory, "db_path", "unknown")
         self.reason_counts: Counter[str] = Counter()
         self.outcome_counts: Counter[str] = Counter()
 
@@ -74,19 +76,44 @@ class ValidationRecorder:
         if not self._snapshots and not self._outcomes:
             return
         with self.session_factory() as session:
-            session.add_all(self._snapshots)
-            session.add_all(self._outcomes)
+            if self._snapshots:
+                session.execute(
+                    DecisionSnapshot.__table__.insert(),
+                    [self._snapshot_to_row(snapshot) for snapshot in self._snapshots],
+                )
+            if self._outcomes:
+                session.execute(
+                    DecisionOutcome.__table__.insert(),
+                    [self._outcome_to_row(outcome) for outcome in self._outcomes],
+                )
             session.commit()
+        batch_size = len(self._outcomes)
+        self.validation_written_total += batch_size
+        logger.info(
+            "[VALIDATION_WRITE] committed_batch n=%d total=%d db=%s",
+            batch_size,
+            self.validation_written_total,
+            self.db_path,
+        )
         self._snapshots.clear()
         self._outcomes.clear()
 
+    @staticmethod
+    def _snapshot_to_row(snapshot: DecisionSnapshot) -> Dict[str, Any]:
+        return {col.name: getattr(snapshot, col.name) for col in DecisionSnapshot.__table__.columns}
+
+    @staticmethod
+    def _outcome_to_row(outcome: DecisionOutcome) -> Dict[str, Any]:
+        return {col.name: getattr(outcome, col.name) for col in DecisionOutcome.__table__.columns}
+
     def log_stats(self) -> None:
         top_reasons = ", ".join([f"{reason}={count}" for reason, count in self.reason_counts.most_common(3)])
+        skip_total = self.total_rows - self.outcome_counts.get("WOULD_TRADE", 0)
         logger.info(
-            "[VALIDATION_STATS] total_rows=%d would_trade=%d skip=%d top_reasons=%s",
-            self.total_rows,
+            "[VALIDATION_STATS] written_total=%d would_trade=%d skip_total=%d top_skips=%s",
+            self.validation_written_total,
             self.outcome_counts.get("WOULD_TRADE", 0),
-            self.total_rows - self.outcome_counts.get("WOULD_TRADE", 0),
+            skip_total,
             top_reasons or "n/a",
         )
 
@@ -115,6 +142,7 @@ class SpotPerpPaperEngine:
         self.assets = list(assets)
         self.trading = trading
         self.validation_settings = validation_settings or ValidationSettings()
+        self._validation_config_provided = validation_settings is not None
         self.taker_fee_spot = taker_fee_spot
         self.taker_fee_perp = taker_fee_perp
         self.db_session_factory = db_session_factory
@@ -165,6 +193,22 @@ class SpotPerpPaperEngine:
             self._heartbeat_interval,
         )
         await self.client.start_market_data(self.assets, self.assets, self.assets)
+
+        validation_msg = (
+            "[VALIDATION] enabled=true sample_interval_ms=%s flush_every_n=%s stats_log_interval_sec=%s"
+            if self.validation_settings.enabled
+            else "[VALIDATION] enabled=false (reason=%s)"
+        )
+        if self.validation_settings.enabled:
+            logger.info(
+                validation_msg,
+                self.validation_settings.sample_interval_ms,
+                self.validation_settings.sqlite_flush_every_n,
+                self.validation_settings.stats_log_interval_sec,
+            )
+        else:
+            reason = "disabled" if self._validation_config_provided else "missing_config"
+            logger.info(validation_msg, reason)
 
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(stop_event))
         self._feed_health_task = asyncio.create_task(self._feed_health_loop(stop_event))
@@ -269,15 +313,17 @@ class SpotPerpPaperEngine:
             return
         sample_interval = max(1, self.validation_settings.sample_interval_ms) / 1000.0
         last_stats_log = time.time()
-        while self._running and (not stop_event or not stop_event.is_set()):
-            start = time.time()
-            self._capture_validation_samples()
-            if time.time() - last_stats_log >= self.validation_settings.stats_log_interval_sec:
-                last_stats_log = time.time()
-                self._validation_recorder.log_stats()
-            elapsed = time.time() - start
-            await asyncio.sleep(max(0.0, sample_interval - elapsed))
-        self._validation_recorder.flush()
+        try:
+            while self._running and (not stop_event or not stop_event.is_set()):
+                start = time.time()
+                self._capture_validation_samples()
+                if time.time() - last_stats_log >= self.validation_settings.stats_log_interval_sec:
+                    last_stats_log = time.time()
+                    self._validation_recorder.log_stats()
+                elapsed = time.time() - start
+                await asyncio.sleep(max(0.0, sample_interval - elapsed))
+        finally:
+            self._validation_recorder.flush()
 
     def _log_heartbeat(self) -> None:
         self._last_heartbeat = time.time()
