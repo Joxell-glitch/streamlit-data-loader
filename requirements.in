@@ -1,0 +1,25 @@
+# Direct runtime dependencies for the Hyperliquid triangular arbitrage bot
+# Keep pins minimal; rely on requirements-lock.txt for reproducible installs.
+
+# Core trading and data handling
+pandas==2.0.3
+numpy==1.24.4
+SQLAlchemy==1.4.52
+PyYAML==6.0.1
+python-dotenv==1.0.1
+httpx[http2]==0.27.0
+websockets==12.0
+
+# CLI utilities
+click==8.1.7
+typer==0.12.3
+
+# API and web dashboard
+fastapi==0.125.0
+uvicorn==0.38.0
+streamlit==1.52.2
+streamlit-autorefresh==1.0.1
+altair==6.0.0
+requests==2.31.0
+
+twilio==9.9.0

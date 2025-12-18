@@ -1,7 +1,2 @@
-streamlit==1.52.2
-streamlit-autorefresh==1.0.1
-altair==6.0.0
-requests==2.31.0
-fastapi==0.125.0
-uvicorn==0.38.0
-twilio==9.9.0
+# Deprecated: use requirements.in for direct deps and requirements-lock.txt for installs.
+-r requirements.in

@@ -1,0 +1,58 @@
+DEPENDENCY EMERGENCY PROTOCOL (Python 3.8 on Ubuntu 20.04)
+=========================================================
+
+Scopo: evitare "casino" di dipendenze e ripristinare un ambiente funzionante in modo riproducibile.
+
+1) Diagnosi rapida
+------------------
+- Leggi l'errore completo, in particolare i blocchi "ResolutionImpossible" di pip.
+- Identifica il pacchetto che introduce il vincolo incompatibile (cerca "Requires" e la versione richiesta).
+- Verifica cosa è già installato:
+  python -m pip list
+- Verifica l'integrità dei pacchetti installati:
+  python -m pip check
+- Se usi proxy, controlla le variabili d'ambiente: echo $HTTP_PROXY $HTTPS_PROXY
+
+2) Ripristino ambiente da zero
+------------------------------
+- Distruggi l'ambiente corrente:
+  rm -rf .venv
+- Ricrea un ambiente pulito con Python 3.8 (Ubuntu 20.04):
+  python3.8 -m venv .venv
+  source .venv/bin/activate
+- Installa SOLO dal lock:
+  python -m pip install -r requirements-lock.txt
+- Verifica:
+  python -m pip check
+
+3) Rigenerazione del lock (solo se necessario)
+----------------------------------------------
+Fallo solo quando devi introdurre/rimuovere dipendenze. Evita di rigenerare al buio.
+- Assicurati di avere accesso a PyPI e di usare Python 3.8.
+- Installa le dipendenze dirette:
+  python -m pip install -r requirements.in
+- Verifica lo stato:
+  python -m pip check
+- Congela l'ambiente funzionante:
+  python -m pip freeze --all > requirements-lock.txt
+- Riesegui i test/CLI principali. Commita il nuovo lock insieme a requirements.in/README.
+
+4) Rollback se tutto è rotto
+----------------------------
+- Ripristina i file di lock e manifest:
+  git checkout -- requirements-lock.txt requirements.in README.md constraints.txt
+- Ricrea il venv e reinstalla dal lock (vedi punto 2).
+- Se l'ultimo commit è sospetto, torna a un tag/commit precedente:
+  git checkout <tag_o_commit_stabile>
+  rm -rf .venv
+  python3.8 -m venv .venv
+  source .venv/bin/activate
+  python -m pip install -r requirements-lock.txt
+
+5) Regole "NON FARE MAI"
+-------------------------
+- Non usare `pip install -U <pacchetto>` a caso nel venv condiviso.
+- Non mescolare installazioni senza lock (requirements.in) con quelle con lock (requirements-lock.txt).
+- Non modificare requirements-lock.txt a mano se non proveniente da un ambiente verificato con Python 3.8.
+- Non committare lock generati con una versione di Python diversa senza indicarlo chiaramente.
+- Non lasciare variabili di proxy errate: se la rete non funziona, correggi proxy o lavora offline con lock esistente.

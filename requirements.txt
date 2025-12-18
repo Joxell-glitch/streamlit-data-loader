@@ -1,2 +1,2 @@
--r requirements-core.txt
--r requirements-ui.txt
+# Install from the lock file to ensure reproducible environments.
+-r requirements-lock.txt

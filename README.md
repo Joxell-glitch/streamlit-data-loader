@@ -1,6 +1,6 @@
 # Hyperliquid Triangular Arbitrage Bot (Paper Trading)
 
-This repository contains an asynchronous Python 3.11+ paper-trading bot for **triangular arbitrage** on **Hyperliquid spot markets**. It discovers tradable triangles, streams order books, simulates trades with realistic depth/fees, and records everything to a database. An offline analysis module evaluates performance and suggests tuning parameters.
+This repository contains an asynchronous Python 3.8+ paper-trading bot for **triangular arbitrage** on **Hyperliquid spot markets**. It discovers tradable triangles, streams order books, simulates trades with realistic depth/fees, and records everything to a database. An offline analysis module evaluates performance and suggests tuning parameters.
 
 > **Important:** This project is **paper trading only**. It never sends live orders. Use it to research and rehearse before building a real execution layer.
 
@@ -15,23 +15,59 @@ This repository contains an asynchronous Python 3.11+ paper-trading bot for **tr
 - GitHub Actions CI running pytest.
 
 ## Requirements
-- Python 3.11+
+- Python 3.8
 - Access to the internet to reach Hyperliquid APIs (for live streaming). Offline tests use mocks.
 
-## Dependency policy (requirements vs constraints)
-- `requirements-*.txt` capture the desired top-level dependencies for each surface (core CLI vs. UI/backends) and may include extras like `httpx[http2]`.
-- `constraints.txt` is the deterministic lock (only `package==version`, no extras) derived from a known-good environment.
-- Deterministic reinstall: `python -m pip install -r requirements-core.txt -c constraints.txt && python -m pip install -r requirements-ui.txt -c constraints.txt`.
-- Refresh the lock after updating packages: `python -m pip freeze --all > constraints.txt`.
-- Verify the environment integrity: `python -m pip check`.
+## Installazione riproducibile (Python 3.8)
+I lock sono conservati in `requirements-lock.txt`. Installa sempre da lì, non dalle dipendenze dirette.
+
+### Setup pulito
+```bash
+rm -rf .venv
+python3.8 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+```
+
+### Install dal lock
+```bash
+python -m pip install -r requirements-lock.txt
+python -m pip check
+```
+
+### Rigenerare il lock (solo quando serve)
+Usa un ambiente funzionante con Python 3.8, tutti i pacchetti installati e nessun errore `pip check`:
+```bash
+python -m pip install -r requirements.in
+python -m pip check
+python -m pip freeze --all > requirements-lock.txt
+```
+Commita il nuovo lock solo se l'applicazione continua a funzionare e `pip check` resta pulito.
+
+### Rollback se esplode tutto
+```bash
+git checkout -- requirements-lock.txt requirements.in README.md
+rm -rf .venv
+python3.8 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-lock.txt
+python -m pip check
+```
+
+### Comandi principali
+- Inizializza il DB: `python -m src.cli init-db --config-path config/config.yaml`
+- Avvia il paper bot: `python -m src.cli.run_paper_bot --config-path config/config.yaml`
+- Analizza una run: `python -m src.cli analyze-run --run-id <RUN_ID> --config-path config/config.yaml`
+- Misura la latenza API: `python -m src.cli measure-latency --config-path config/config.yaml`
 
 ## Quick start
-1. Clone the repo and create a virtual environment:
+1. Clone the repo e crea un ambiente virtuale (Python 3.8):
    ```bash
-   python3 -m venv .venv
+   python3.8 -m venv .venv
    source .venv/bin/activate
-   pip install --upgrade pip
-   pip install -e .
+   python -m pip install --upgrade pip setuptools wheel
+   python -m pip install -r requirements-lock.txt
+   python -m pip check
    ```
 
 2. Copy the example configuration and environment files:
@@ -72,7 +108,7 @@ This repository contains an asynchronous Python 3.11+ paper-trading bot for **tr
    La dashboard chiama sempre il backend FastAPI configurato in `NEXT_PUBLIC_BACKEND_URL` (nessun accesso diretto a file o SQLite).
 
 ## Bootstrap (one-liner)
-`rm -rf .venv && python3.8 -m venv .venv && source .venv/bin/activate && python -m pip install --upgrade pip setuptools wheel && python -m pip install -r requirements-core.txt -c constraints.txt && python -m pip install -r requirements-ui.txt -c constraints.txt && python -m pip check && python -m src.cli.run_spot_perp_paper --assets BTC`
+`rm -rf .venv && python3.8 -m venv .venv && source .venv/bin/activate && python -m pip install --upgrade pip setuptools wheel && python -m pip install -r requirements-lock.txt && python -m pip check && python -m src.cli.run_spot_perp_paper --assets BTC`
 
 ## Configuration
 - `config/config.yaml` holds defaults. Environment variables (from `.env`) override file values.
@@ -90,10 +126,10 @@ This repository contains an asynchronous Python 3.11+ paper-trading bot for **tr
    ```bash
    git clone <REPO_URL>
    cd hyperliquid-triangular-arbitrage-bot
-   python3 -m venv .venv
+   python3.8 -m venv .venv
    source .venv/bin/activate
-   pip install --upgrade pip
-   pip install -r requirements.txt
+   python -m pip install --upgrade pip setuptools wheel
+   python -m pip install -r requirements-lock.txt
    ```
 2. Creare il file `.env` (puoi partire da `.env.example`):
    ```bash
