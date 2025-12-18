@@ -12,6 +12,7 @@ from src.db.session import get_session, init_db
 from src.hyperliquid_client.client import HyperliquidClient
 from src.strategy.spot_perp_paper import SpotPerpPaperEngine
 from src.db.models import SpotPerpOpportunity
+from src.observability.feed_health import FeedHealthTracker
 
 logger = get_logger(__name__)
 
@@ -39,9 +40,17 @@ async def _run_engine(config_path: str, debug_feeds: bool = False, assets_arg: O
     assets = [a.strip().upper() for a in assets_arg.split(",") if a.strip()] if assets_arg else ["BTC"]
     logger.info("Starting spot-perp paper engine for assets: %s", ", ".join(assets))
 
-    client = HyperliquidClient(settings.api, settings.network)
+    feed_health = FeedHealthTracker(settings.observability.feed_health)
+    client = HyperliquidClient(settings.api, settings.network, feed_health_tracker=feed_health)
     session_factory = get_session(settings)
-    engine = SpotPerpPaperEngine(client, assets, settings.trading, db_session_factory=session_factory)
+    engine = SpotPerpPaperEngine(
+        client,
+        assets,
+        settings.trading,
+        db_session_factory=session_factory,
+        feed_health_settings=settings.observability.feed_health,
+        feed_health_tracker=feed_health,
+    )
 
     stop_event = asyncio.Event()
     try:

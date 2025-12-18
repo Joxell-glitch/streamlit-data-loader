@@ -35,6 +35,12 @@ logging:
   log_file: "data/bot.log"
   console: true
 
+feed_health:
+  log_interval_sec: 1
+  stale_ms: 1500
+  out_of_sync_ms: 1000
+  dedup_ttl_sec: 2
+
 observability:
   log_top_n_each_sec: 60
   top_n: 10

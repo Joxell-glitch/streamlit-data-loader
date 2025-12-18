@@ -21,6 +21,7 @@ except ImportError:  # websockets < 10 compatibility
 
 from src.config.models import APISettings
 from src.core.logging import get_logger
+from src.observability.feed_health import FeedHealthTracker
 
 logger = get_logger(__name__)
 
@@ -31,9 +32,15 @@ BOOKS_SOCKET_CAP = int(os.getenv("HL_BOOKS_SOCKET_CAP", "3"))
 class HyperliquidClient:
     """Thin wrapper around Hyperliquid REST and WebSocket APIs."""
 
-    def __init__(self, api_settings: APISettings, network: str = "mainnet") -> None:
+    def __init__(
+        self,
+        api_settings: APISettings,
+        network: str = "mainnet",
+        feed_health_tracker: Optional[FeedHealthTracker] = None,
+    ) -> None:
         self.api_settings = api_settings
         self.network = network
+        self.feed_health_tracker = feed_health_tracker
         self._ws_market: Optional[WebSocketClientProtocol] = None
         self._ws_books: Dict[str, WebSocketClientProtocol] = {}
         self._ws_lock = asyncio.Lock()
@@ -123,6 +130,9 @@ class HyperliquidClient:
 
     def add_mark_listener(self, cb: Callable[[str, float, Dict[str, Any]], None]) -> None:
         self._mark_listeners.append(cb)
+
+    def set_feed_health_tracker(self, tracker: FeedHealthTracker) -> None:
+        self.feed_health_tracker = tracker
 
     # WebSocket lifecycle ---------------------------------------------------
 
@@ -264,6 +274,9 @@ class HyperliquidClient:
             logger.info("[WS_FEED][INFO] first_market_msg channel=%s keys=%s", channel, list(msg.keys()))
 
         if not handled:
+            tracker = getattr(self, "feed_health_tracker", None)
+            if tracker:
+                tracker.register_heartbeat(msg)
             logger.debug("[WS_FEED][DEBUG] Unrecognized message: %s", msg)
 
     async def _ws_recv_loop(
@@ -290,6 +303,16 @@ class HyperliquidClient:
                     on_first_message = None
 
                 msg = self._ensure_dict(raw_msg)
+                tracker = getattr(self, "feed_health_tracker", None)
+                if tracker:
+                    try:
+                        dedup_input = msg if isinstance(msg, dict) else {"raw": raw_msg}
+                        duplicate = tracker.register_message(dedup_input)
+                    except Exception:
+                        duplicate = False
+                    if duplicate:
+                        logger.debug("[%s][WS_FEED] duplicate message dropped", name)
+                        continue
                 if isinstance(msg, dict):
                     ch = msg.get("channel")
                     keys = list(msg.keys())
@@ -730,6 +753,10 @@ class HyperliquidClient:
             self._orderbooks_perp[asset] = norm
         else:
             self._orderbooks_spot[asset] = norm
+
+        tracker = getattr(self, "feed_health_tracker", None)
+        if tracker:
+            tracker.on_book_update(asset, kind, best_bid, best_ask, ts, bids, asks)
 
         for cb in self._orderbook_listeners:
             try:

@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from .models import (
     APISettings,
     DatabaseSettings,
+    FeedHealthSettings,
     LoggingSettings,
     ObservabilitySettings,
     Settings,
@@ -48,7 +49,14 @@ def load_config(config_path: str) -> Settings:
 
     logging = LoggingSettings(**raw["logging"])
 
-    observability = ObservabilitySettings(**raw.get("observability", {}))
+    obs_raw = raw.get("observability", {})
+    feed_health_raw = raw.get("feed_health", obs_raw.get("feed_health", {})) or {}
+    observability = ObservabilitySettings(
+        log_top_n_each_sec=obs_raw.get("log_top_n_each_sec", 60),
+        top_n=obs_raw.get("top_n", 10),
+        min_abs_profit_to_log=obs_raw.get("min_abs_profit_to_log", 0.0),
+        feed_health=FeedHealthSettings(**feed_health_raw),
+    )
 
     return Settings(
         network=raw["network"],
@@ -94,6 +102,18 @@ def apply_env_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
     raw["observability"]["top_n"] = int(env.get("OBS_TOP_N", raw["observability"].get("top_n", 10)))
     raw["observability"]["min_abs_profit_to_log"] = float(
         env.get("OBS_MIN_ABS_PROFIT_TO_LOG", raw["observability"].get("min_abs_profit_to_log", 0.0))
+    )
+
+    raw.setdefault("feed_health", {})
+    raw["feed_health"]["log_interval_sec"] = float(
+        env.get("FEED_HEALTH_LOG_INTERVAL_SEC", raw["feed_health"].get("log_interval_sec", 1))
+    )
+    raw["feed_health"]["stale_ms"] = int(env.get("FEED_HEALTH_STALE_MS", raw["feed_health"].get("stale_ms", 1500)))
+    raw["feed_health"]["out_of_sync_ms"] = int(
+        env.get("FEED_HEALTH_OUT_OF_SYNC_MS", raw["feed_health"].get("out_of_sync_ms", 1000))
+    )
+    raw["feed_health"]["dedup_ttl_sec"] = int(
+        env.get("FEED_HEALTH_DEDUP_TTL_SEC", raw["feed_health"].get("dedup_ttl_sec", 2))
     )
 
     return raw

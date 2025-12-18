@@ -8,11 +8,12 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from src.config.loader import load_config
-from src.config.models import Settings, TradingSettings
+from src.config.models import FeedHealthSettings, Settings, TradingSettings
 from src.core.logging import get_logger
 from src.db.models import SpotPerpOpportunity
 from src.db.session import get_session
 from src.hyperliquid_client.client import HyperliquidClient
+from src.observability.feed_health import FeedHealthTracker
 
 logger = get_logger(__name__)
 
@@ -61,6 +62,8 @@ class SpotPerpPaperEngine:
         db_session_factory=get_session,
         taker_fee_spot: float = 0.001,
         taker_fee_perp: float = 0.0005,
+        feed_health_settings: Optional[FeedHealthSettings] = None,
+        feed_health_tracker: Optional[FeedHealthTracker] = None,
     ) -> None:
         self.client = client
         self.assets = list(assets)
@@ -68,10 +71,13 @@ class SpotPerpPaperEngine:
         self.taker_fee_spot = taker_fee_spot
         self.taker_fee_perp = taker_fee_perp
         self.db_session_factory = db_session_factory
+        self.feed_health = feed_health_tracker or FeedHealthTracker(feed_health_settings)
+        self.client.set_feed_health_tracker(self.feed_health)
         self.asset_state: Dict[str, AssetState] = {asset: AssetState() for asset in self.assets}
         self._running = False
         self._heartbeat_interval = 10
         self._heartbeat_task: Optional[asyncio.Task] = None
+        self._feed_health_task: Optional[asyncio.Task] = None
         self._last_heartbeat = time.time()
         self._metrics_interval = float(os.getenv("SPOT_PERP_METRICS_INTERVAL", "30"))
         self._last_metrics_log = time.time()
@@ -97,6 +103,7 @@ class SpotPerpPaperEngine:
             }
             for asset in self.assets
         }
+        self._last_skip_reason: Dict[str, str] = {asset: "" for asset in self.assets}
         self._state_log_interval = 10.0
 
     async def run_forever(self, stop_event: Optional[asyncio.Event] = None) -> None:
@@ -109,6 +116,7 @@ class SpotPerpPaperEngine:
         await self.client.start_market_data(self.assets, self.assets, self.assets)
 
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(stop_event))
+        self._feed_health_task = asyncio.create_task(self._feed_health_loop(stop_event))
 
         try:
             while self._running and (not stop_event or not stop_event.is_set()):
@@ -119,6 +127,10 @@ class SpotPerpPaperEngine:
                 self._heartbeat_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await self._heartbeat_task
+            if self._feed_health_task:
+                self._feed_health_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._feed_health_task
             self._log_summary("run_forever_exit")
 
     def _on_orderbook(self, kind: str, coin: str, ob_norm: Dict[str, Any]) -> None:
@@ -189,6 +201,12 @@ class SpotPerpPaperEngine:
                 self._last_metrics_log = time.time()
                 self._log_metrics()
 
+    async def _feed_health_loop(self, stop_event: Optional[asyncio.Event]) -> None:
+        interval = self.feed_health.settings.log_interval_sec if self.feed_health else 1.0
+        while self._running and (not stop_event or not stop_event.is_set()):
+            await asyncio.sleep(interval)
+            self._log_feed_health()
+
     def _log_heartbeat(self) -> None:
         self._last_heartbeat = time.time()
         for asset, counts in self.update_counts.items():
@@ -238,6 +256,60 @@ class SpotPerpPaperEngine:
                     mark_ok,
                 )
 
+    def _log_feed_health(self) -> None:
+        for asset in self.assets:
+            snapshot = self.feed_health.build_asset_snapshot(asset)
+            logger.info(
+                (
+                    "[FEED_HEALTH] asset=%s spot_age_ms=%.1f perp_age_ms=%.1f "
+                    "spot_bbo=%.6f/%.6f perp_bbo=%.6f/%.6f "
+                    "spot_incomplete=%s perp_incomplete=%s stale=%s crossed=%s out_of_sync=%s "
+                    "ws_msgs=%d dup=%d hb=%d book_incomplete=%d stale_book=%d crossed_book=%d out_of_sync_count=%d"
+                ),
+                asset,
+                snapshot["spot_age_ms"],
+                snapshot["perp_age_ms"],
+                snapshot["spot_bid"],
+                snapshot["spot_ask"],
+                snapshot["perp_bid"],
+                snapshot["perp_ask"],
+                snapshot["spot_incomplete"],
+                snapshot["perp_incomplete"],
+                snapshot["stale"],
+                snapshot["crossed"],
+                snapshot["out_of_sync"],
+                snapshot["ws_msgs_total"],
+                snapshot["duplicate_events"],
+                snapshot["heartbeat_only"],
+                snapshot["book_incomplete"],
+                snapshot["stale_book"],
+                snapshot["crossed_book"],
+                snapshot["out_of_sync_count"],
+            )
+
+    def _log_strategy_skip(self, asset: str, reason: str, snapshot: Dict[str, Any]) -> None:
+        interval = self.feed_health.settings.log_interval_sec if self.feed_health else 1.0
+        now = time.time()
+        if reason == self._last_skip_reason[asset] and now - self._last_update_log[asset]["skip"] < interval:
+            return
+        self._last_skip_reason[asset] = reason
+        self._last_update_log[asset]["skip"] = now
+        state = self.asset_state[asset]
+        logger.info(
+            (
+                "[STRATEGY_SKIP] asset=%s reason=%s spot_age_ms=%.1f perp_age_ms=%.1f "
+                "spot_bbo=%.6f/%.6f perp_bbo=%.6f/%.6f"
+            ),
+            asset,
+            reason,
+            snapshot.get("spot_age_ms", float("inf")),
+            snapshot.get("perp_age_ms", float("inf")),
+            state.spot.best_bid,
+            state.spot.best_ask,
+            state.perp.best_bid,
+            state.perp.best_ask,
+        )
+
     def _log_metrics(self) -> None:
         reconnect_counts = getattr(self.client, "reconnect_counts", {})
         logger.info(
@@ -269,25 +341,24 @@ class SpotPerpPaperEngine:
 
     def _evaluate_and_record(self, asset: str) -> None:
         state = self.asset_state[asset]
-        missing_components = []
-        if not state.spot.has_liquidity():
-            missing_components.append("spot")
-        if not state.perp.has_liquidity():
-            missing_components.append("perp")
-        if state.mark_price <= 0:
-            if time.time() - self._last_update_log[asset]["skip"] >= 1:
-                self._last_update_log[asset]["skip"] = time.time()
-                logger.debug("[SPOT_PERP][DEBUG] compute_skip asset=%s missing=mark", asset)
-            return
+        snapshot = self.feed_health.build_asset_snapshot(asset)
+        reason: Optional[str] = None
 
-        if missing_components:
-            if time.time() - self._last_update_log[asset]["skip"] >= 1:
-                self._last_update_log[asset]["skip"] = time.time()
-                logger.debug(
-                    "[SPOT_PERP][DEBUG] compute_skip asset=%s missing=%s",
-                    asset,
-                    ",".join(missing_components),
-                )
+        if state.mark_price <= 0:
+            reason = "SKIP_NO_BOOK"
+        elif not state.spot.has_liquidity() or not state.perp.has_liquidity():
+            reason = "SKIP_NO_BOOK"
+        elif snapshot["spot_incomplete"] or snapshot["perp_incomplete"]:
+            reason = "SKIP_INCOMPLETE"
+        elif snapshot["stale"]:
+            reason = "SKIP_STALE"
+        elif snapshot["out_of_sync"]:
+            reason = "SKIP_OUT_OF_SYNC"
+        elif snapshot["crossed"]:
+            reason = "SKIP_INVALID_BBO"
+
+        if reason:
+            self._log_strategy_skip(asset, reason, snapshot)
             return
 
         spot = state.spot
@@ -444,6 +515,10 @@ class SpotPerpPaperEngine:
             self._heartbeat_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._heartbeat_task
+        if self._feed_health_task and not self._feed_health_task.done():
+            self._feed_health_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._feed_health_task
         self._log_summary()
 
     def _log_summary(self, reason: str = "shutdown") -> None:
@@ -481,7 +556,9 @@ async def run_spot_perp_engine(
     taker_fee_perp: float = 0.0005,
 ):  
     settings = settings or load_config("config/config.yaml")
-    client = HyperliquidClient(settings.api, settings.network)
+    feed_health_settings = settings.observability.feed_health
+    feed_health_tracker = FeedHealthTracker(feed_health_settings)
+    client = HyperliquidClient(settings.api, settings.network, feed_health_tracker=feed_health_tracker)
     db_session_factory = get_session(settings)
     engine = SpotPerpPaperEngine(
         client,
@@ -490,6 +567,8 @@ async def run_spot_perp_engine(
         db_session_factory=db_session_factory,
         taker_fee_spot=taker_fee_spot,
         taker_fee_perp=taker_fee_perp,
+        feed_health_settings=feed_health_settings,
+        feed_health_tracker=feed_health_tracker,
     )
     stop_event = asyncio.Event()
 
