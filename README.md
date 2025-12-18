@@ -18,6 +18,13 @@ This repository contains an asynchronous Python 3.11+ paper-trading bot for **tr
 - Python 3.11+
 - Access to the internet to reach Hyperliquid APIs (for live streaming). Offline tests use mocks.
 
+## Dependency policy (requirements vs constraints)
+- `requirements-*.txt` capture the desired top-level dependencies for each surface (core CLI vs. UI/backends) and may include extras like `httpx[http2]`.
+- `constraints.txt` is the deterministic lock (only `package==version`, no extras) derived from a known-good environment.
+- Deterministic reinstall: `python -m pip install -r requirements-core.txt -c constraints.txt && python -m pip install -r requirements-ui.txt -c constraints.txt`.
+- Refresh the lock after updating packages: `python -m pip freeze --all > constraints.txt`.
+- Verify the environment integrity: `python -m pip check`.
+
 ## Quick start
 1. Clone the repo and create a virtual environment:
    ```bash
@@ -63,6 +70,9 @@ This repository contains an asynchronous Python 3.11+ paper-trading bot for **tr
    NEXT_PUBLIC_BACKEND_URL=http://localhost:8000 npm run dev
    ```
    La dashboard chiama sempre il backend FastAPI configurato in `NEXT_PUBLIC_BACKEND_URL` (nessun accesso diretto a file o SQLite).
+
+## Bootstrap (one-liner)
+`rm -rf .venv && python3.8 -m venv .venv && source .venv/bin/activate && python -m pip install --upgrade pip setuptools wheel && python -m pip install -r requirements-core.txt -c constraints.txt && python -m pip install -r requirements-ui.txt -c constraints.txt && python -m pip check && python -m src.cli.run_spot_perp_paper --assets BTC`
 
 ## Configuration
 - `config/config.yaml` holds defaults. Environment variables (from `.env`) override file values.

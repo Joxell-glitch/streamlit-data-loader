@@ -1,0 +1,9 @@
+pandas==2.0.3
+numpy==1.24.4
+SQLAlchemy==1.4.52
+PyYAML==6.0.1
+python-dotenv==1.0.1
+httpx[http2]==0.27.0
+websockets==12.0
+typer==0.12.3
+click==8.1.7
