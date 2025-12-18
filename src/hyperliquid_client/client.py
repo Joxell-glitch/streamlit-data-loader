@@ -69,7 +69,7 @@ class HyperliquidClient:
         self._perp_subscriptions: set[str] = set()
         self._mark_subscriptions: set[str] = set()
         self._sent_subscriptions_market: set[str] = set()
-        self._sent_subscriptions_books: Dict[str, set[str]] = {}
+        self._sent_subscriptions_books: Dict[str, Dict[str, set[str]]] = {}
         self._all_mids_subscribed = False
         self._raw_sample_logged = 0
         self._first_market_logged = False
@@ -80,6 +80,7 @@ class HyperliquidClient:
         self._mark_ok: Dict[str, bool] = {}
         self._spot_first_valid_book_logged: set[str] = set()
         self._l2book_level_format_warned: set[str] = set()
+        self._l2book_kind_logged: set[str] = set()
         self._first_data_event = asyncio.Event()
         self._connected_event_market = asyncio.Event()
         self._connected_event_books = asyncio.Event()
@@ -192,15 +193,23 @@ class HyperliquidClient:
             await self._ensure_books_runner(coin)
             await self._books_connected_events[coin].wait()
             if coin not in self._sent_subscriptions_books:
-                self._sent_subscriptions_books[coin] = set()
-            logger.info("[WS_BOOKS_%s] subscribing single l2Book: %s", coin, coin)
+                self._sent_subscriptions_books[coin] = {"spot": set(), "perp": set()}
+            if kind == "perp" and self._sent_subscriptions_books.get(coin, {}).get("spot"):
+                logger.info(
+                    "[WS_BOOKS_%s][WS_FEED] dual_subscribe spot+perp for same coin", coin
+                )
+            if kind == "spot" and self._sent_subscriptions_books.get(coin, {}).get("perp"):
+                logger.info(
+                    "[WS_BOOKS_%s][WS_FEED] dual_subscribe spot+perp for same coin", coin
+                )
+            logger.info("[WS_BOOKS_%s] subscribing single l2Book: %s (%s)", coin, coin, kind)
             await self._subscribe_books(coin, kind, coin)
 
     async def _ensure_books_runner(self, asset: str) -> None:
         if asset not in self._books_connected_events:
             self._books_connected_events[asset] = asyncio.Event()
         if asset not in self._sent_subscriptions_books:
-            self._sent_subscriptions_books[asset] = set()
+            self._sent_subscriptions_books[asset] = {"spot": set(), "perp": set()}
         runner = self._ws_runner_tasks_books.get(asset)
         if runner and not runner.done():
             return
@@ -548,7 +557,8 @@ class HyperliquidClient:
         self._connected_event.clear()
         sent_set = self._sent_subscriptions_books.get(asset)
         if sent_set is not None:
-            sent_set.clear()
+            for kind_set in sent_set.values():
+                kind_set.clear()
         recv_task = self._recv_tasks_books.get(asset)
         if recv_task and not recv_task.done():
             recv_task.cancel()
@@ -588,18 +598,17 @@ class HyperliquidClient:
             self._logger.info("[WS_MARKET][WS_FEED] resubscribed after reconnect")
 
     async def _resubscribe_books(self, asset: str, is_reconnect: bool) -> None:
-        symbol_entry = None
-        kind = "spot"
+        symbol_entries: list[tuple[str, Dict[str, str]]] = []
         if asset in self._spot_symbol_to_base:
-            symbol_entry = {asset: self._spot_symbol_to_base[asset]}
-            kind = "spot"
+            symbol_entries.append(("spot", {asset: self._spot_symbol_to_base[asset]}))
         if asset in self._perp_symbol_to_base:
-            symbol_entry = {asset: self._perp_symbol_to_base[asset]}
-            kind = "perp"
-        if symbol_entry:
+            symbol_entries.append(("perp", {asset: self._perp_symbol_to_base[asset]}))
+        for kind, symbol_entry in symbol_entries:
             await self.subscribe_orderbooks(symbol_entry, kind=kind)
-        if is_reconnect and symbol_entry:
-            self._logger.info("[WS_BOOKS_%s][WS_FEED] resubscribed after reconnect", asset)
+            if is_reconnect:
+                self._logger.info(
+                    "[WS_BOOKS_%s][WS_FEED] resubscribed after reconnect (%s)", asset, kind
+                )
 
     # Parsing helpers -------------------------------------------------------
 
@@ -682,7 +691,7 @@ class HyperliquidClient:
         await self._send_subscribe_ws(
             sub_payload,
             ws_attr="_ws_books",
-            sent_set=self._sent_subscriptions_books[asset],
+            sent_set=self._sent_subscriptions_books[asset][kind],
             name=f"WS_BOOKS_{asset}",
             asset=asset,
         )
@@ -760,7 +769,13 @@ class HyperliquidClient:
                 "[WS_FEED][INFO] first_l2book_received coin=%s bid=%s ask=%s", coin, best_bid, best_ask
             )
 
-        kind, asset = self._detect_kind(payload, msg, coin)
+        kind, asset, reason = self._detect_kind(payload, msg, coin)
+
+        if asset not in self._l2book_kind_logged:
+            self._l2book_kind_logged.add(asset)
+            logger.info(
+                "[WS_FEED][INFO] l2book_kind_resolved asset=%s kind=%s reason=%s", asset, kind, reason
+            )
 
         if kind == "perp":
             self._orderbooks_perp[asset] = norm
@@ -881,19 +896,21 @@ class HyperliquidClient:
                 return val
         return msg
 
-    def _detect_kind(self, payload: Dict[str, Any], msg: Dict[str, Any], coin: str) -> tuple[str, str]:
+    def _detect_kind(
+        self, payload: Dict[str, Any], msg: Dict[str, Any], coin: str
+    ) -> tuple[str, str, str]:
         subscription = msg.get("subscription") if isinstance(msg.get("subscription"), dict) else {}
         is_perp = payload.get("perp") or payload.get("isPerp") or payload.get("contractType") == "perp"
         is_perp = is_perp or msg.get("isPerp") or (isinstance(subscription, dict) and subscription.get("isPerp"))
         if is_perp:
-            return "perp", self._perp_symbol_to_base.get(coin, coin)
+            return "perp", self._perp_symbol_to_base.get(coin, coin), "payload_flag"
         if coin in self._spot_symbol_to_base:
-            return "spot", self._spot_symbol_to_base[coin]
+            return "spot", self._spot_symbol_to_base[coin], "spot_map"
         if coin in self._perp_symbol_to_base:
-            return "perp", self._perp_symbol_to_base[coin]
+            return "perp", self._perp_symbol_to_base[coin], "perp_map"
         if isinstance(coin, str) and coin.endswith("/USDC"):
-            return "spot", coin.split("/")[0]
-        return "spot", coin
+            return "spot", coin.split("/")[0], "symbol_suffix"
+        return "spot", coin, "default"
 
     def _best_price(self, levels: List[Any], reverse: bool) -> Optional[float]:
         best: Optional[float] = None
