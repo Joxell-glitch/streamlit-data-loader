@@ -852,7 +852,10 @@ class HyperliquidClient:
         return msg
 
     def _detect_kind(self, payload: Dict[str, Any], msg: Dict[str, Any], coin: str) -> tuple[str, str]:
-        if payload.get("perp") or payload.get("isPerp") or payload.get("contractType") == "perp" or msg.get("isPerp"):
+        subscription = msg.get("subscription") if isinstance(msg.get("subscription"), dict) else {}
+        is_perp = payload.get("perp") or payload.get("isPerp") or payload.get("contractType") == "perp"
+        is_perp = is_perp or msg.get("isPerp") or (isinstance(subscription, dict) and subscription.get("isPerp"))
+        if is_perp:
             return "perp", self._perp_symbol_to_base.get(coin, coin)
         if coin in self._spot_symbol_to_base:
             return "spot", self._spot_symbol_to_base[coin]
