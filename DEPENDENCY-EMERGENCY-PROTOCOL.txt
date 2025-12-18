@@ -29,18 +29,18 @@ Scopo: evitare "casino" di dipendenze e ripristinare un ambiente funzionante in 
 ----------------------------------------------
 Fallo solo quando devi introdurre/rimuovere dipendenze. Evita di rigenerare al buio.
 - Assicurati di avere accesso a PyPI e di usare Python 3.8.
-- Installa le dipendenze dirette:
-  python -m pip install -r requirements.in
-- Verifica lo stato:
+- Installa gli strumenti di lock e genera il nuovo file in modo riproducibile:
+  ```bash
+  python -m pip install --upgrade pip setuptools wheel pip-tools
+  python -m piptools compile --resolver=backtracking --python-version 3.8 --output-file requirements-lock.txt requirements.in
   python -m pip check
-- Congela l'ambiente funzionante:
-  python -m pip freeze --all > requirements-lock.txt
+  ```
 - Riesegui i test/CLI principali. Commita il nuovo lock insieme a requirements.in/README.
 
 4) Rollback se tutto è rotto
 ----------------------------
 - Ripristina i file di lock e manifest:
-  git checkout -- requirements-lock.txt requirements.in README.md constraints.txt
+ git checkout -- requirements-lock.txt requirements.in README.md constraints.txt
 - Ricrea il venv e reinstalla dal lock (vedi punto 2).
 - Se l'ultimo commit è sospetto, torna a un tag/commit precedente:
   git checkout <tag_o_commit_stabile>
@@ -48,6 +48,17 @@ Fallo solo quando devi introdurre/rimuovere dipendenze. Evita di rigenerare al b
   python3.8 -m venv .venv
   source .venv/bin/activate
   python -m pip install -r requirements-lock.txt
+
+Caso specifico: lock con versione non presente su PyPI (es. `aiohappyeyeballs==2.6.1`)
+------------------------------------------------------------------------------------
+- Sintomo: `pip install -r requirements-lock.txt` fallisce indicando che la versione non esiste.
+- Azione rapida: rigenera il lock con Python 3.8 usando `pip-compile` e verificando che le versioni esistano:
+  ```bash
+  python -m pip install --upgrade pip setuptools wheel pip-tools
+  python -m piptools compile --resolver=backtracking --python-version 3.8 --output-file requirements-lock.txt requirements.in
+  python -m pip check
+  ```
+- Verifica che il comando di bootstrap funzioni (vedi README) e commita sia il lock sia l'aggiornamento alle note se il problema è stato documentato.
 
 5) Regole "NON FARE MAI"
 -------------------------

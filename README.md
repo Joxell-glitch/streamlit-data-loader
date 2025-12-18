@@ -36,13 +36,17 @@ python -m pip check
 ```
 
 ### Rigenerare il lock (solo quando serve)
-Usa un ambiente funzionante con Python 3.8, tutti i pacchetti installati e nessun errore `pip check`:
+Usa sempre Python 3.8 e genera il lock con `pip-compile` per ottenere solo versioni presenti su PyPI:
 ```bash
-python -m pip install -r requirements.in
+python -m pip install --upgrade pip setuptools wheel pip-tools
+python -m piptools compile \
+  --resolver=backtracking \
+  --python-version 3.8 \
+  --output-file requirements-lock.txt \
+  requirements.in
 python -m pip check
-python -m pip freeze --all > requirements-lock.txt
 ```
-Commita il nuovo lock solo se l'applicazione continua a funzionare e `pip check` resta pulito.
+Commita il nuovo lock solo se l'applicazione continua a funzionare, `pip check` resta pulito e i test passano.
 
 ### Rollback se esplode tutto
 ```bash
