@@ -82,6 +82,8 @@ class HyperliquidClient:
         self._l2book_level_format_warned: set[str] = set()
         self._l2book_kind_logged: set[str] = set()
         self._first_data_event = asyncio.Event()
+        self._payload_shape_logged = False
+        self._payload_type_warned = False
         self._connected_event_market = asyncio.Event()
         self._connected_event_books = asyncio.Event()
         self._connected_event_books.set()
@@ -364,46 +366,50 @@ class HyperliquidClient:
                     on_first_message()
                     on_first_message = None
 
-                msg = self._ensure_dict(raw_msg)
-                tracker = getattr(self, "feed_health_tracker", None)
-                if tracker:
-                    try:
-                        dedup_input = msg if isinstance(msg, dict) else {"raw": raw_msg}
-                        duplicate = tracker.register_message(dedup_input)
-                    except Exception:
-                        duplicate = False
-                    if duplicate:
-                        logger.debug("[%s][WS_FEED] duplicate message dropped", name)
-                        continue
-                if isinstance(msg, dict):
-                    ch = msg.get("channel")
-                    keys = list(msg.keys())
-                    dkeys = list(msg.get("data", {}).keys()) if isinstance(msg.get("data"), dict) else None
-                    self._logger.info(
-                        "[%s][RAW_RECV] channel=%s keys=%s data_keys=%s", name, ch, keys, dkeys
-                    )
-                else:
-                    self._logger.info("[%s][RAW_RECV] non-dict msg=%r", name, raw_msg)
+                parsed_msg = self._ensure_dict(raw_msg)
+                if parsed_msg is None:
                     continue
 
-                if self._raw_sample_logged < sample_limit:
-                    self._raw_sample_logged += 1
-                    try:
-                        snippet = json.dumps(msg)
-                    except Exception:
-                        snippet = str(msg)
-                    logger.info(
-                        "[WS_FEED][SAMPLE] keys=%s msg=%s",
-                        list(msg.keys()),
-                        snippet[:500],
-                    )
-                if name.startswith("WS_BOOKS") and self._is_l2book(msg):
-                    payload = self._extract_payload(msg)
-                    coin = payload.get("coin") or payload.get("asset") or msg.get("coin") or msg.get("asset")
-                    target_asset = coin if isinstance(coin, str) else asset
-                    if target_asset:
-                        self._books_last_l2book[target_asset] = time.monotonic()
-                self._handle_ws_message(msg)
+                for msg in self._iterate_payload(parsed_msg):
+                    tracker = getattr(self, "feed_health_tracker", None)
+                    if tracker:
+                        try:
+                            dedup_input = msg if isinstance(msg, dict) else {"raw": raw_msg}
+                            duplicate = tracker.register_message(dedup_input)
+                        except Exception:
+                            duplicate = False
+                        if duplicate:
+                            logger.debug("[%s][WS_FEED] duplicate message dropped", name)
+                            continue
+                    if isinstance(msg, dict):
+                        ch = msg.get("channel")
+                        keys = list(msg.keys())
+                        dkeys = list(msg.get("data", {}).keys()) if isinstance(msg.get("data"), dict) else None
+                        self._logger.info(
+                            "[%s][RAW_RECV] channel=%s keys=%s data_keys=%s", name, ch, keys, dkeys
+                        )
+                    else:
+                        self._logger.info("[%s][RAW_RECV] non-dict msg=%r", name, raw_msg)
+                        continue
+
+                    if self._raw_sample_logged < sample_limit:
+                        self._raw_sample_logged += 1
+                        try:
+                            snippet = json.dumps(msg)
+                        except Exception:
+                            snippet = str(msg)
+                        logger.info(
+                            "[WS_FEED][SAMPLE] keys=%s msg=%s",
+                            list(msg.keys()),
+                            snippet[:500],
+                        )
+                    if name.startswith("WS_BOOKS") and self._is_l2book(msg):
+                        payload = self._extract_payload(msg)
+                        coin = payload.get("coin") or payload.get("asset") or msg.get("coin") or msg.get("asset")
+                        target_asset = coin if isinstance(coin, str) else asset
+                        if target_asset:
+                            self._books_last_l2book[target_asset] = time.monotonic()
+                    self._handle_ws_message(msg)
         except websockets.ConnectionClosed as e:
             self._logger.warning(
                 "[%s] recv loop ConnectionClosed code=%s reason=%s",
@@ -667,8 +673,8 @@ class HyperliquidClient:
 
     # Parsing helpers -------------------------------------------------------
 
-    def _ensure_dict(self, raw_msg: Any) -> Optional[Dict[str, Any]]:
-        if isinstance(raw_msg, dict):
+    def _ensure_dict(self, raw_msg: Any) -> Optional[Any]:
+        if isinstance(raw_msg, (dict, list)):
             return raw_msg
         if isinstance(raw_msg, (bytes, bytearray)):
             try:
@@ -1017,6 +1023,56 @@ class HyperliquidClient:
                 else:
                     best = min(best, price)
         return best
+
+    def _iterate_payload(self, payload: Any) -> List[Dict[str, Any]]:
+        self._log_payload_shape(payload)
+        if isinstance(payload, dict):
+            return [payload]
+        if isinstance(payload, list):
+            msgs: List[Dict[str, Any]] = []
+            for item in payload:
+                if isinstance(item, dict):
+                    msgs.append(item)
+                else:
+                    self._log_unhandled_payload(item)
+            return msgs
+        self._log_unhandled_payload(payload)
+        return []
+
+    def _log_payload_shape(self, payload: Any) -> None:
+        if self._payload_shape_logged:
+            return
+        if isinstance(payload, list):
+            first_item = payload[0] if payload else None
+            first_type = type(first_item).__name__ if first_item is not None else None
+            first_keys = list(first_item.keys()) if isinstance(first_item, dict) else None
+            logger.info(
+                "[WS_FEED][INFO] payload_shape type=%s len=%s first_type=%s first_keys=%s",
+                type(payload).__name__,
+                len(payload),
+                first_type,
+                first_keys,
+            )
+        elif isinstance(payload, dict):
+            logger.info(
+                "[WS_FEED][INFO] payload_shape type=%s keys=%s",
+                type(payload).__name__,
+                list(payload.keys()),
+            )
+        else:
+            self._log_unhandled_payload(payload)
+            return
+        self._payload_shape_logged = True
+
+    def _log_unhandled_payload(self, payload: Any) -> None:
+        if self._payload_type_warned:
+            return
+        logger.warning(
+            "[WS_FEED][WARN] unhandled WS payload type=%s sample=%r",
+            type(payload).__name__,
+            payload,
+        )
+        self._payload_type_warned = True
 
     async def close(self) -> None:
         self._stopped = True

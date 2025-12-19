@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from typing import Optional
+from typing import Dict, Optional
 
 import typer
 
@@ -83,6 +83,22 @@ def run_paper_bot_command(config_path: str = "config/config.yaml", run_id: Optio
         scanner = TriangularScanner(
             market_graph.triangles, orderbooks, settings.trading, settings.observability
         )
+        asset_pair_map: Dict[str, str] = {}
+        for edge in market_graph.edges:
+            if edge.quote != settings.trading.quote_asset:
+                continue
+            asset_pair_map.setdefault(edge.base, edge.pair)
+        symbol_map = {asset: asset for asset in asset_pair_map}
+
+        def _on_orderbook(kind, asset, snapshot):
+            pair = asset_pair_map.get(asset)
+            if not pair:
+                return
+            bids = snapshot.get("bids", []) if isinstance(snapshot, dict) else []
+            asks = snapshot.get("asks", []) if isinstance(snapshot, dict) else []
+            orderbooks.apply_snapshot(pair, bids, asks)
+
+        client.add_orderbook_listener(_on_orderbook)
 
         async def ws_listener():
             backoff = 1
@@ -91,17 +107,10 @@ def run_paper_bot_command(config_path: str = "config/config.yaml", run_id: Optio
                     await client.connect_ws()
                     backoff = 1
                     _update_status(ws_connected=True)
-                    await client.subscribe_orderbooks([e.quote for e in market_graph.edges if e.base == settings.trading.quote_asset])
-
-                    async for msg in client.ws_messages():
-                        if stop_event.is_set():
-                            break
-                        if msg.get("type") == "l2Book":
-                            coin = msg.get("coin")
-                            pair = f"{settings.trading.quote_asset}/{coin}"
-                            bids = msg.get("levels", {}).get("bids", [])
-                            asks = msg.get("levels", {}).get("asks", [])
-                            orderbooks.apply_snapshot(pair, bids, asks)
+                    await client.subscribe_orderbooks(symbol_map, kind="spot")
+                    await client.subscribe_mark_prices(symbol_map)
+                    await stop_event.wait()
+                    break
                 except Exception as exc:  # pragma: no cover - defensive
                     logger.warning("WebSocket listener error: %s", exc)
                     await asyncio.sleep(backoff)
