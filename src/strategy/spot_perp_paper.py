@@ -540,7 +540,7 @@ class SpotPerpPaperEngine:
 
         reason: Optional[str] = None
         if not gates["has_mark"]:
-            reason = "SKIP_NO_BOOK"
+            reason = "SKIP_NO_MARK"
         elif not gates["has_spot_book"] or not gates["has_perp_book"]:
             reason = "SKIP_NO_BOOK"
         elif not gates["not_incomplete"]:
@@ -590,6 +590,11 @@ class SpotPerpPaperEngine:
         self._last_skip_reason[asset] = reason
         self._last_update_log[asset]["skip"] = now
         state = self.asset_state[asset]
+        gates = {
+            "has_mark": state.mark_price > 0,
+            "has_spot_book": state.spot.has_liquidity(),
+            "has_perp_book": state.perp.has_liquidity(),
+        }
         if reason == "SKIP_NO_BOOK":
             spot_book = getattr(self.client, "_orderbooks_spot", {}).get(asset, None)
             perp_book = getattr(self.client, "_orderbooks_perp", {}).get(asset, None)
@@ -599,7 +604,8 @@ class SpotPerpPaperEngine:
                 "[NO_BOOK_DEBUG] asset=%s "
                 "has_spot_book=%s has_perp_book=%s "
                 "spot_levels=%s perp_levels=%s "
-                "spot_bbo=%s perp_bbo=%s",
+                "spot_bbo=%s perp_bbo=%s mark=%.6f has_mark=%s "
+                "gate_spot=%s gate_perp=%s",
                 asset,
                 bool(spot_book),
                 bool(perp_book),
@@ -607,6 +613,19 @@ class SpotPerpPaperEngine:
                 len(getattr(perp_book, "levels", [])) if perp_book else None,
                 spot_bbo,
                 perp_bbo,
+                state.mark_price,
+                gates.get("has_mark"),
+                gates.get("has_spot_book"),
+                gates.get("has_perp_book"),
+            )
+        elif reason == "SKIP_NO_MARK":
+            logger.info(
+                "[NO_BOOK_DEBUG] asset=%s has_mark=%s mark=%.6f gate_spot=%s gate_perp=%s",
+                asset,
+                gates.get("has_mark"),
+                state.mark_price,
+                gates.get("has_spot_book"),
+                gates.get("has_perp_book"),
             )
         logger.info(
             (
