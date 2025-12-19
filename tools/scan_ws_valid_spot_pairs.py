@@ -128,6 +128,7 @@ async def subscribe_and_wait(ws_url: str, coin: str, timeout: float) -> Tuple[bo
     try:
         async with websockets.connect(ws_url) as ws:
             await ws.send(json.dumps({"method": "subscribe", "subscription": {"type": "l2Book", "coin": coin}}))
+            received_any = False
             while True:
                 remaining = timeout - (time.monotonic() - start)
                 if remaining <= 0:
@@ -137,9 +138,11 @@ async def subscribe_and_wait(ws_url: str, coin: str, timeout: float) -> Tuple[bo
                 except asyncio.TimeoutError:
                     return False, "timeout"
                 except (ConnectionClosed, WebSocketException) as exc:
-                    return False, f"closed:{type(exc).__name__}"
+                    suffix = "no_data" if not received_any else type(exc).__name__
+                    return False, f"closed:{suffix}"
                 if raw is None:
                     return False, "empty"
+                received_any = True
                 try:
                     msg: Dict[str, Any] = json.loads(raw)
                 except json.JSONDecodeError:
@@ -158,7 +161,8 @@ async def scan_pair(ws_url: str, pair: SpotPair, timeout: float) -> ScanResult:
     if ok_primary:
         return ScanResult(pair=pair, ok=True, fallback_used=False, primary_error=None, fallback_error=None)
 
-    ok_fallback, err_fallback = await subscribe_and_wait(ws_url, pair.pair, timeout)
+    fallback_coin = f"{pair.base}/{pair.quote}"
+    ok_fallback, err_fallback = await subscribe_and_wait(ws_url, fallback_coin, timeout)
     return ScanResult(
         pair=pair,
         ok=ok_fallback,
