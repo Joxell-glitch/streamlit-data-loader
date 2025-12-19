@@ -45,9 +45,40 @@ def measure_latency(config_path: str = typer.Option("config/config.yaml")):
             await client.fetch_info()
             latencies.append((time.time() - start) * 1000)
         await client.close()
-        typer.echo(f"Latency ms min/avg/max: {min(latencies):.2f}/{sum(latencies)/len(latencies):.2f}/{max(latencies):.2f}")
+        typer.echo(
+            f"Latency ms min/avg/max: {min(latencies):.2f}/{sum(latencies)/len(latencies):.2f}/{max(latencies):.2f}"
+        )
 
     asyncio.run(_measure())
+
+
+@app.command()
+def check_spot_ws_coin(
+    asset: str = typer.Option("PURR/USDC", help="Spot pair to verify (e.g. PURR/USDC)"),
+    wait_seconds: float = typer.Option(5.0, help="Seconds to wait for l2Book data"),
+    config_path: str = typer.Option("config/config.yaml", help="Path to config"),
+):
+    """
+    Quick helper to verify the resolved WS coin string for a spot pair and check l2Book delivery.
+    """
+    settings = load_config(config_path)
+    setup_logging(settings.logging)
+
+    async def _run() -> None:
+        client = HyperliquidClient(settings.api, settings.network)
+        pair = asset.upper()
+        symbol_map = {client._normalize_spot_symbol(pair): pair}
+        await client.connect_ws()
+        await client.subscribe_orderbooks(symbol_map, kind="spot")
+        got_l2book = await client.wait_for_spot_l2book(pair, timeout=wait_seconds)
+        resolved = client.get_resolved_spot_coin(pair) or client.get_resolved_spot_coin(
+            client._normalize_spot_symbol(pair)
+        )
+        await client.close()
+        resolved_msg = resolved or "unknown"
+        typer.echo(f"[SPOT_WS] pair={pair} resolved_coin={resolved_msg} l2Book_received={got_l2book}")
+
+    asyncio.run(_run())
 
 
 @app.command()

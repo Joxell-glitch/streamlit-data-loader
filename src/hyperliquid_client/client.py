@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional
 
 import httpx
 import websockets
+from websockets.exceptions import WebSocketException
 
 # websockets moved WebSocketClientProtocol from websockets.legacy.client to
 # websockets.client in newer releases; try the modern path first and fall back
@@ -27,6 +28,7 @@ logger = get_logger(__name__)
 
 BOOKS_IDLE_TIMEOUT = int(os.getenv("HL_BOOKS_IDLE_TIMEOUT", "20"))
 BOOKS_SOCKET_CAP = int(os.getenv("HL_BOOKS_SOCKET_CAP", "3"))
+SPOT_L2BOOK_WAIT_SECONDS = float(os.getenv("HL_SPOT_L2BOOK_WAIT_SECONDS", "3"))
 
 
 class HyperliquidClient:
@@ -96,6 +98,9 @@ class HyperliquidClient:
         self._books_watchdog_tasks: Dict[str, asyncio.Task] = {}
         self._books_idle_timeout = BOOKS_IDLE_TIMEOUT
         self._books_cap_warned = False
+        self._spot_pair_map: Dict[str, str] = {}
+        self._spot_ws_coin_choice: Dict[str, str] = {}
+        self._spot_l2book_events: Dict[str, asyncio.Event] = {}
         self._reconnect_counters: Dict[str, Any] = {
             "market": 0,
             "books": {},
@@ -204,6 +209,7 @@ class HyperliquidClient:
                 spot_key = f"spot:{coin}"
                 self._spot_subscriptions.add(spot_key)
                 self._spot_symbol_to_base[coin] = base
+                self._spot_pair_map[coin] = base
 
             await self._ensure_books_runner(coin)
             await self._books_connected_events[coin].wait()
@@ -273,7 +279,11 @@ class HyperliquidClient:
             except Exception as exc:
                 logger.warning("[WS_BOOKS_%s][BOOTSTRAP] snapshot failed: %s", coin, exc)
 
-            await self._subscribe_books(coin, kind, coin)
+            if kind == "spot":
+                spot_pair = self._spot_pair_map.get(coin) or base
+                await self._subscribe_spot_books(coin, spot_pair)
+            else:
+                await self._subscribe_books(coin, kind, coin)
 
     async def _ensure_books_runner(self, asset: str) -> None:
         if asset not in self._books_connected_events:
@@ -778,6 +788,83 @@ class HyperliquidClient:
         )
         await asyncio.sleep(self._subscribe_delay_ms / 1000.0)
 
+    async def _subscribe_spot_books(self, asset: str, spot_pair: str) -> None:
+        if os.getenv("HL_DISABLE_L2BOOK", "0") == "1":
+            logger.info("[WS_FEED] HL_DISABLE_L2BOOK=1 -> skipping l2Book subscriptions")
+            return
+        if os.getenv("HL_DISABLE_SPOT_L2BOOK", "0") == "1":
+            logger.info("[WS_FEED] HL_DISABLE_SPOT_L2BOOK=1 -> skipping spot l2Book")
+            return
+
+        primary_coin, fallback_coin = self._resolve_spot_ws_coin(spot_pair)
+        asset_key = self._spot_symbol_to_base.get(asset, spot_pair) or asset
+        if fallback_coin:
+            self._spot_symbol_to_base.setdefault(fallback_coin, asset_key)
+        l2_event = self._spot_l2book_events.setdefault(asset_key, asyncio.Event())
+        l2_event.clear()
+
+        async def _do_subscribe(candidate: str) -> None:
+            try:
+                await self._send_subscribe_ws(
+                    {"type": "l2Book", "coin": candidate},
+                    ws_attr="_ws_books",
+                    sent_set=self._sent_subscriptions_books[asset]["spot"],
+                    name=f"WS_BOOKS_{asset}",
+                    asset=asset,
+                )
+            except WebSocketException as exc:
+                self._sent_subscriptions_books[asset]["spot"].discard(
+                    json.dumps({"type": "l2Book", "coin": candidate}, sort_keys=True)
+                )
+                raise exc
+
+        try:
+            await _do_subscribe(primary_coin)
+        except WebSocketException as exc:
+            if fallback_coin != primary_coin:
+                logger.info(
+                    "[WS_BOOKS_%s] SPOT WS coin resolved: %s -> %s (fallback after send failure %s)",
+                    asset_key,
+                    primary_coin,
+                    fallback_coin,
+                    type(exc).__name__,
+                )
+                await _do_subscribe(fallback_coin)
+                self._spot_ws_coin_choice[asset_key] = fallback_coin
+                await asyncio.sleep(self._subscribe_delay_ms / 1000.0)
+                return
+            raise
+
+        await asyncio.sleep(self._subscribe_delay_ms / 1000.0)
+        try:
+            await asyncio.wait_for(l2_event.wait(), timeout=SPOT_L2BOOK_WAIT_SECONDS)
+            self._spot_ws_coin_choice.setdefault(asset_key, primary_coin)
+            return
+        except asyncio.TimeoutError:
+            if fallback_coin == primary_coin:
+                return
+            logger.info(
+                "[WS_BOOKS_%s] SPOT WS coin resolved: %s -> %s (fallback after no l2Book)",
+                asset_key,
+                primary_coin,
+                fallback_coin,
+            )
+            self._sent_subscriptions_books[asset]["spot"].discard(
+                json.dumps({"type": "l2Book", "coin": primary_coin}, sort_keys=True)
+            )
+            await _do_subscribe(fallback_coin)
+            try:
+                await asyncio.wait_for(l2_event.wait(), timeout=SPOT_L2BOOK_WAIT_SECONDS)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[WS_BOOKS_%s][WARN] fallback coin=%s still no l2Book after %.1fs",
+                    asset_key,
+                    fallback_coin,
+                    SPOT_L2BOOK_WAIT_SECONDS,
+                )
+            self._spot_ws_coin_choice[asset_key] = fallback_coin
+            await asyncio.sleep(self._subscribe_delay_ms / 1000.0)
+
     async def _send_subscribe_ws(
         self,
         sub: Dict[str, Any],
@@ -862,6 +949,18 @@ class HyperliquidClient:
             self._orderbooks_perp[asset] = norm
         else:
             self._orderbooks_spot[asset] = norm
+            event = self._spot_l2book_events.get(asset)
+            if event and not event.is_set():
+                event.set()
+                resolved_coin = self._spot_ws_coin_choice.get(asset)
+                if resolved_coin and resolved_coin != coin:
+                    logger.info(
+                        "[WS_BOOKS_%s] SPOT WS coin resolved: %s -> %s (from payload)",
+                        asset,
+                        resolved_coin,
+                        coin,
+                    )
+                self._spot_ws_coin_choice[asset] = coin
 
             if (
                 asset not in self._spot_first_valid_book_logged
@@ -1200,11 +1299,50 @@ class HyperliquidClient:
     def _normalize_perp_symbol(self, base: str) -> str:
         return base.split("/")[0]
 
+    def _resolve_spot_ws_coin(self, spot_pair: str) -> tuple[str, str]:
+        """
+        Resolve the coin string to use for spot l2Book subscriptions.
+
+        Primary attempt: use the current behaviour (often \"@{index}\" from the pair string).
+        Fallback: use the explicit \"BASE/QUOTE\" pair which is accepted by the WS for spots like PURR/USDC.
+        """
+        pair = (spot_pair or "").strip().upper()
+        if "/" in pair:
+            base, quote = pair.split("/", 1)
+        else:
+            base, quote = pair, "USDC"
+
+        primary = base
+        if base.startswith("@"):
+            primary = base
+
+        fallback = f"{base}/{quote}"
+        return primary, fallback
+
     def _get_subscribe_delay_ms(self) -> int:
         try:
             return int(os.getenv("HL_SUBSCRIBE_DELAY_MS", "200"))
         except ValueError:
             return 200
+
+    def get_resolved_spot_coin(self, asset: str) -> Optional[str]:
+        """
+        Return the resolved spot WS coin string used for subscriptions for the given asset.
+        """
+        asset_key = self._spot_symbol_to_base.get(asset, asset)
+        return self._spot_ws_coin_choice.get(asset_key)
+
+    async def wait_for_spot_l2book(self, asset: str, timeout: float = SPOT_L2BOOK_WAIT_SECONDS) -> bool:
+        """
+        Wait for a spot l2Book message for the given asset (base or pair). Returns True if received.
+        """
+        asset_key = self._spot_symbol_to_base.get(asset, asset)
+        event = self._spot_l2book_events.setdefault(asset_key, asyncio.Event())
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
 
 
 async def stream_orderbooks(client: HyperliquidClient, coins: Iterable[str]):
