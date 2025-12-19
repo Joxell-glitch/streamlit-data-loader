@@ -83,11 +83,18 @@ def run_paper_bot_command(config_path: str = "config/config.yaml", run_id: Optio
         scanner = TriangularScanner(
             market_graph.triangles, orderbooks, settings.trading, settings.observability
         )
+        triangle_assets = set()
+        for triangle in market_graph.triangles:
+            for edge in triangle.edges:
+                triangle_assets.add(edge.base)
+        logger.info("[TRIANGLE_ASSETS] triangles=%d unique_assets=%d", len(market_graph.triangles), len(triangle_assets))
         asset_pair_map: Dict[str, str] = {}
-        for edge in market_graph.edges:
-            if edge.quote != settings.trading.quote_asset:
-                continue
-            asset_pair_map.setdefault(edge.base, edge.pair)
+        for triangle in market_graph.triangles:
+            for edge in triangle.edges:
+                if edge.quote != settings.trading.quote_asset:
+                    continue
+                if edge.base in triangle_assets:
+                    asset_pair_map.setdefault(edge.base, edge.pair)
         symbol_map = {asset: asset for asset in asset_pair_map}
         parse_debug_logged = set()
 
