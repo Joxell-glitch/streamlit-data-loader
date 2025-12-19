@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import uuid
 from typing import Dict, List, Optional, Tuple
@@ -60,8 +61,13 @@ def run_paper_bot_command(config_path: str = "config/config.yaml", run_id: Optio
         client = HyperliquidClient(settings.api, settings.network)
         orderbooks = OrderbookCache()
         market_graph = MarketGraph(settings)
-        spot_meta = await client.fetch_spot_meta()
-        market_graph.build_from_spot_meta(spot_meta)
+        use_perps = str(os.getenv("HL_USE_PERPS", "1")).lower() in {"1", "true", "yes", "on"}
+        if use_perps:
+            perp_meta = await client.fetch_perp_meta()
+            market_graph.build_from_perp_meta(perp_meta)
+        else:
+            spot_meta = await client.fetch_spot_meta()
+            market_graph.build_from_spot_meta(spot_meta)
         session_factory = get_session(settings)
         profit_recorder = ProfitRecorder(db_session_factory=session_factory)
 
@@ -88,14 +94,32 @@ def run_paper_bot_command(config_path: str = "config/config.yaml", run_id: Optio
             for edge in triangle.edges:
                 triangle_assets.add(edge.base)
         logger.info("[TRIANGLE_ASSETS] triangles=%d unique_assets=%d", len(market_graph.triangles), len(triangle_assets))
+        if not market_graph.triangles:
+            logger.warning("[TRIANGLE_ASSETS] triangles_total=0 cannot start scanner")
         asset_pair_map: Dict[str, str] = {}
-        for triangle in market_graph.triangles:
-            for edge in triangle.edges:
-                if edge.quote != settings.trading.quote_asset:
-                    continue
-                if edge.base in triangle_assets:
-                    asset_pair_map.setdefault(edge.base, edge.pair)
+        quote_aliases = {settings.trading.quote_asset.upper(), "USD", "USDC"}
+        if market_graph.triangles:
+            iterable_edges = [edge for tri in market_graph.triangles for edge in tri.edges]
+        else:
+            iterable_edges = list(market_graph.edges)
+        for edge in iterable_edges:
+            if edge.quote.upper() not in quote_aliases:
+                continue
+            if triangle_assets and edge.base not in triangle_assets:
+                continue
+            asset_pair_map.setdefault(edge.base, edge.pair)
         symbol_map = {asset: asset for asset in asset_pair_map}
+        max_assets = settings.trading.max_assets_per_ws
+        if len(symbol_map) > max_assets:
+            logger.warning(
+                "[WS_BOOKS] requested %s assets but cap=%s; trimming to first %s",
+                len(symbol_map),
+                max_assets,
+                max_assets,
+            )
+            trimmed = dict(list(symbol_map.items())[:max_assets])
+            symbol_map = trimmed
+            asset_pair_map = {asset: asset_pair_map[asset] for asset in symbol_map}
         parse_debug_logged = set()
 
         def _normalize_level(level) -> Optional[Tuple[float, float]]:
@@ -160,12 +184,13 @@ def run_paper_bot_command(config_path: str = "config/config.yaml", run_id: Optio
 
         async def ws_listener():
             backoff = 1
+            books_kind = "perp" if use_perps else "spot"
             while not stop_event.is_set():
                 try:
                     await client.connect_ws()
                     backoff = 1
                     _update_status(ws_connected=True)
-                    await client.subscribe_orderbooks(symbol_map, kind="spot")
+                    await client.subscribe_orderbooks(symbol_map, kind=books_kind)
                     await client.subscribe_mark_prices(symbol_map)
                     await stop_event.wait()
                     break

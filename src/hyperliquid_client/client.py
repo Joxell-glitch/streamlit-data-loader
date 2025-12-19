@@ -122,6 +122,19 @@ class HyperliquidClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def fetch_perp_meta(self) -> Dict[str, Any]:
+        """
+        Fetch perp market metadata (universe) from Hyperliquid.
+
+        Hyperliquid exposes perp meta via the same /info endpoint using
+        a \"meta\" request type. The returned payload contains a \"universe\"
+        array with the available perp contracts.
+        """
+        url = f"{self.rest_base}{self.api_settings.info_path}"
+        resp = await self._session.post(url, json={"type": "meta"})
+        resp.raise_for_status()
+        return resp.json()
+
     async def fetch_orderbook_snapshot(self, coin: str) -> Dict[str, Any]:
         url = f"{self.rest_base}{self.api_settings.info_path}"
         resp = await self._session.post(url, json={"type": "l2Book", "coin": coin})
