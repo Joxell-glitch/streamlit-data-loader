@@ -32,7 +32,20 @@ class MarketGraph:
         self.last_build_stats: Dict[str, int] = {}
         self.last_triangle_stats: Dict[str, int] = {}
 
+    def _log_triangle_assets(self) -> None:
+        triangle_assets = {edge.base for tri in self.triangles for edge in tri.edges}
+        logger.info(
+            "[TRIANGLE_ASSETS] triangles=%d unique_assets=%d",
+            len(self.triangles),
+            len(triangle_assets),
+        )
+        if not self.triangles:
+            reason = self.last_triangle_stats.get("triangles_zero_reason") or "unknown"
+            logger.warning("[TRIANGLE_ASSETS] triangles_total=0 reason=%s", reason)
+
     def build_from_spot_meta(self, spot_meta: dict, max_sample_edges: int = 10) -> None:
+        self.edges = []
+        self.triangles = []
         pairs = spot_meta.get("universe", [])
         quote_asset = self.settings.trading.quote_asset
         whitelist = set(a.upper() for a in self.settings.trading.whitelist)
@@ -109,6 +122,80 @@ class MarketGraph:
             skipped_whitelist,
             skipped_blacklist,
         )
+        self._log_triangle_assets()
+
+    def build_from_perp_meta(self, perp_meta: dict, max_sample_edges: int = 10) -> None:
+        self.edges = []
+        self.triangles = []
+        pairs = perp_meta.get("universe", [])
+        quote_asset = "USD"
+        whitelist = set(a.upper() for a in self.settings.trading.whitelist)
+        blacklist = set(a.upper() for a in self.settings.trading.blacklist)
+
+        markets_total = len(pairs)
+        markets_active = sum(1 for entry in pairs if entry.get("enabled", True))
+        skipped_missing_base = 0
+        skipped_whitelist = 0
+        skipped_blacklist = 0
+        used_pairs = set()
+
+        for entry in pairs:
+            symbol = (
+                entry.get("name")
+                or entry.get("symbol")
+                or entry.get("coin")
+                or entry.get("base")
+            )
+            if not symbol:
+                skipped_missing_base += 1
+                continue
+            base = symbol.upper()
+            quote = quote_asset
+            if whitelist and base not in whitelist and quote not in whitelist:
+                skipped_whitelist += 1
+                continue
+            if base in blacklist or quote in blacklist:
+                skipped_blacklist += 1
+                continue
+            pair_name = f"{base}-PERP"
+            used_pairs.add(pair_name)
+            self.edges.append(Edge(base=base, quote=quote, pair=pair_name))
+            self.edges.append(Edge(base=quote, quote=base, pair=pair_name))
+
+        self.triangles = self._enumerate_triangles()
+
+        nodes_count = len(self.assets)
+        edges_count = len(self.edges)
+        max_sample_edges = min(max_sample_edges, 10)
+        sample_edges = [(e.base, e.quote) for e in self.edges[:max_sample_edges]]
+
+        self.last_build_stats = {
+            "markets_total": markets_total,
+            "markets_active": markets_active,
+            "markets_used": len(used_pairs),
+            "nodes": nodes_count,
+            "edges": edges_count,
+            "skipped_missing_base": skipped_missing_base,
+            "skipped_whitelist": skipped_whitelist,
+            "skipped_blacklist": skipped_blacklist,
+        }
+
+        logger.info(
+            "[GRAPH] markets_total=%s markets_active=%s markets_used=%s nodes=%s edges=%s",
+            markets_total,
+            markets_active,
+            len(used_pairs),
+            nodes_count,
+            edges_count,
+        )
+        logger.info(
+            "[GRAPH] sample_edges=%s skipped_missing_base=%s skipped_whitelist=%s skipped_blacklist=%s",
+            sample_edges,
+            skipped_missing_base,
+            skipped_whitelist,
+            skipped_blacklist,
+        )
+        self._log_triangle_assets()
 
     def _enumerate_triangles(self) -> List[Triangle]:
         triangles: List[Triangle] = []
@@ -166,7 +253,9 @@ class MarketGraph:
                 reasons.append("missing_edge_paths")
             if not reasons:
                 reasons.append("unknown")
-            logger.info("[TRI_ENUM] triangles_zero_reasons=%s", ",".join(reasons))
+            reason_str = ",".join(reasons)
+            logger.info("[TRI_ENUM] triangles_zero_reasons=%s", reason_str)
+            self.last_triangle_stats["triangles_zero_reason"] = reason_str
         return triangles
 
     @property

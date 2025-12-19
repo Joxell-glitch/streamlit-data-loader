@@ -15,6 +15,7 @@ trading:
   safety_slippage_buffer: 0.0005
   max_concurrent_triangles: 5
   top_n_opportunities: 20
+  max_assets_per_ws: 50
   whitelist: []
   blacklist: []
   min_average_volume: 0

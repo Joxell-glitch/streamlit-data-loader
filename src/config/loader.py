@@ -97,6 +97,11 @@ def apply_env_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
     env = os.environ
     raw["network"] = env.get("NETWORK", raw.get("network", "mainnet"))
 
+    raw.setdefault("trading", {})
+    raw["trading"]["max_assets_per_ws"] = int(
+        env.get("TRADING_MAX_ASSETS_PER_WS", raw["trading"].get("max_assets_per_ws", 50))
+    )
+
     raw.setdefault("api", {})
     raw["api"]["rest_base"] = env.get("REST_BASE", raw["api"].get("rest_base"))
     raw["api"]["info_path"] = env.get("INFO_PATH", raw["api"].get("info_path", "/info"))

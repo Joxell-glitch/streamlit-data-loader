@@ -27,6 +27,7 @@ class TradingSettings:
     min_average_volume: float = 0.0
     max_spread_pct: float = 1.0
     top_n_opportunities: int = 20
+    max_assets_per_ws: int = 50
 
 
 @dataclass
