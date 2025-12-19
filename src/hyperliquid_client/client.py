@@ -203,6 +203,61 @@ class HyperliquidClient:
                     "[WS_BOOKS_%s][WS_FEED] dual_subscribe spot+perp for same coin", coin
                 )
             logger.info("[WS_BOOKS_%s] subscribing single l2Book: %s (%s)", coin, coin, kind)
+
+            try:
+                snapshot = await self.fetch_orderbook_snapshot(coin)
+                payload = self._extract_payload(snapshot)
+                levels = payload.get("levels") or payload
+
+                bids_source: Any = None
+                asks_source: Any = None
+
+                if isinstance(levels, dict):
+                    bids_source = levels.get("bids")
+                    asks_source = levels.get("asks")
+                elif isinstance(levels, (list, tuple)) and len(levels) >= 2:
+                    bids_source, asks_source = levels[0], levels[1]
+
+                bids = (
+                    bids_source
+                    if isinstance(bids_source, list)
+                    else payload.get("bids")
+                    if isinstance(payload.get("bids"), list)
+                    else []
+                )
+                asks = (
+                    asks_source
+                    if isinstance(asks_source, list)
+                    else payload.get("asks")
+                    if isinstance(payload.get("asks"), list)
+                    else []
+                )
+
+                best_bid = self._best_price(bids, reverse=True)
+                best_ask = self._best_price(asks, reverse=False)
+                best_bid = float(best_bid) if best_bid is not None else 0.0
+                best_ask = float(best_ask) if best_ask is not None else 0.0
+                ts = (
+                    payload.get("time")
+                    or payload.get("ts")
+                    or payload.get("timestamp")
+                    or time.time()
+                )
+
+                norm = {"bid": best_bid, "ask": best_ask, "bids": bids, "asks": asks, "ts": ts}
+                target_cache = self._orderbooks_perp if kind == "perp" else self._orderbooks_spot
+                target_cache[base] = norm
+
+                logger.info(
+                    "[WS_BOOKS_%s][BOOTSTRAP] applied snapshot kind=%s bid=%s ask=%s",
+                    coin,
+                    kind,
+                    best_bid,
+                    best_ask,
+                )
+            except Exception as exc:
+                logger.warning("[WS_BOOKS_%s][BOOTSTRAP] snapshot failed: %s", coin, exc)
+
             await self._subscribe_books(coin, kind, coin)
 
     async def _ensure_books_runner(self, asset: str) -> None:
