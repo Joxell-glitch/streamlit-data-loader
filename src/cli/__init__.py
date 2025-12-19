@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 import typer
 
@@ -89,14 +89,65 @@ def run_paper_bot_command(config_path: str = "config/config.yaml", run_id: Optio
                 continue
             asset_pair_map.setdefault(edge.base, edge.pair)
         symbol_map = {asset: asset for asset in asset_pair_map}
+        parse_debug_logged = set()
+
+        def _normalize_level(level) -> Optional[Tuple[float, float]]:
+            if isinstance(level, dict):
+                px = level.get("px", level.get("price"))
+                sz = level.get("sz", level.get("size"))
+            elif isinstance(level, (list, tuple)) and len(level) >= 2:
+                px, sz = level[0], level[1]
+            else:
+                return None
+            try:
+                return float(px), float(sz)
+            except (TypeError, ValueError):
+                return None
+
+        def _normalize_side(levels) -> List[Tuple[float, float]]:
+            if not isinstance(levels, (list, tuple)):
+                return []
+            normalized = []
+            for level in levels:
+                normalized_level = _normalize_level(level)
+                if normalized_level is not None:
+                    normalized.append(normalized_level)
+            return normalized
+
+        def _is_desc(levels: List[Tuple[float, float]]) -> bool:
+            return len(levels) < 2 or all(levels[i][0] >= levels[i + 1][0] for i in range(len(levels) - 1))
+
+        def _is_asc(levels: List[Tuple[float, float]]) -> bool:
+            return len(levels) < 2 or all(levels[i][0] <= levels[i + 1][0] for i in range(len(levels) - 1))
 
         def _on_orderbook(kind, asset, snapshot):
             pair = asset_pair_map.get(asset)
             if not pair:
                 return
-            bids = snapshot.get("bids", []) if isinstance(snapshot, dict) else []
-            asks = snapshot.get("asks", []) if isinstance(snapshot, dict) else []
-            orderbooks.apply_snapshot(pair, bids, asks)
+            parsed = False
+            bids: List[Tuple[float, float]] = []
+            asks: List[Tuple[float, float]] = []
+            if isinstance(snapshot, dict) and ("bids" in snapshot or "asks" in snapshot):
+                bids = _normalize_side(snapshot.get("bids", []))
+                asks = _normalize_side(snapshot.get("asks", []))
+                parsed = True
+            elif isinstance(snapshot, dict) and "levels" in snapshot:
+                levels = snapshot.get("levels")
+                if isinstance(levels, (list, tuple)) and len(levels) >= 2:
+                    side_a = _normalize_side(levels[0])
+                    side_b = _normalize_side(levels[1])
+                    if _is_desc(side_a) and _is_asc(side_b):
+                        bids, asks = side_a, side_b
+                    elif _is_desc(side_b) and _is_asc(side_a):
+                        bids, asks = side_b, side_a
+                    else:
+                        bids, asks = side_a, side_b
+                    parsed = True
+            if parsed:
+                orderbooks.apply_snapshot(pair, bids, asks)
+            elif pair not in parse_debug_logged:
+                logger.debug("Could not parse orderbook snapshot for %s: %s", asset, snapshot)
+                parse_debug_logged.add(pair)
 
         client.add_orderbook_listener(_on_orderbook)
 
