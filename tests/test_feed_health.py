@@ -29,3 +29,25 @@ def test_feed_health_marks_crossed_bbo_incomplete():
 
     assert snapshot["spot_incomplete"] is True
     assert snapshot["crossed"] is True
+
+
+def test_feed_health_out_of_sync_detection_uses_seconds():
+    tracker = FeedHealthTracker(settings=None)
+    tracker.settings.out_of_sync_ms = 500
+
+    tracker.on_book_update(
+        "ETH", "spot", best_bid=100.0, best_ask=101.0, ts=1700000000000.0, bids=[], asks=[]
+    )
+    tracker.on_book_update(
+        "ETH", "perp", best_bid=100.0, best_ask=101.0, ts=1700000000.2, bids=[], asks=[]
+    )
+
+    snapshot = tracker.build_asset_snapshot("ETH")
+    assert snapshot["out_of_sync"] is False
+
+    tracker.on_book_update(
+        "ETH", "perp", best_bid=100.0, best_ask=101.0, ts=1700000001.0, bids=[], asks=[]
+    )
+
+    snapshot = tracker.build_asset_snapshot("ETH")
+    assert snapshot["out_of_sync"] is True
