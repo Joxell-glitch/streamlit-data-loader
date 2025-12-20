@@ -841,6 +841,9 @@ class HyperliquidClient:
             self._spot_ws_coin_choice.setdefault(asset_key, primary_coin)
             return
         except asyncio.TimeoutError:
+            if spot_pair.upper() in self.SPECIAL_SPOT_WS_CANONICAL:
+                self._spot_ws_coin_choice.setdefault(asset_key, primary_coin)
+                return
             if fallback_coin == primary_coin:
                 return
             logger.info(
@@ -949,18 +952,23 @@ class HyperliquidClient:
             self._orderbooks_perp[asset] = norm
         else:
             self._orderbooks_spot[asset] = norm
-            event = self._spot_l2book_events.get(asset)
-            if event and not event.is_set():
-                event.set()
-                resolved_coin = self._spot_ws_coin_choice.get(asset)
+            asset_key_base = asset
+            asset_key_pair = coin if isinstance(coin, str) and "/" in coin else None
+            for key in (asset_key_base, asset_key_pair):
+                if not key:
+                    continue
+                event = self._spot_l2book_events.get(key)
+                if event and not event.is_set():
+                    event.set()
+                resolved_coin = self._spot_ws_coin_choice.get(key)
                 if resolved_coin and resolved_coin != coin:
                     logger.info(
                         "[WS_BOOKS_%s] SPOT WS coin resolved: %s -> %s (from payload)",
-                        asset,
+                        key,
                         resolved_coin,
                         coin,
                     )
-                self._spot_ws_coin_choice[asset] = coin
+                self._spot_ws_coin_choice[key] = coin
 
             if (
                 asset not in self._spot_first_valid_book_logged
