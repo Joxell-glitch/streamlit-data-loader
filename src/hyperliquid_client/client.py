@@ -154,11 +154,46 @@ class HyperliquidClient:
         resp.raise_for_status()
         return resp.json()
 
-    async def fetch_orderbook_snapshot(self, coin: str) -> Dict[str, Any]:
+    async def fetch_orderbook_snapshot(
+        self, coin: str, *, asset: Optional[str] = None, kind: Optional[str] = None
+    ) -> Dict[str, Any]:
         url = f"{self.rest_base}{self.api_settings.info_path}"
-        resp = await self._session.post(url, json={"type": "l2Book", "coin": coin})
+        payload = {"type": "l2Book", "coin": coin}
+        asset_key = asset or coin
+        kind_label = kind or "unknown"
+        self._logger.info(
+            "[WS_BOOKS_%s][BOOTSTRAP][DEBUG_SNAPSHOT] kind=%s payload=%s",
+            asset_key,
+            kind_label,
+            json.dumps(payload, sort_keys=True),
+        )
+        resp = await self._session.post(url, json=payload)
+        response_text: Any
+        try:
+            response_text = resp.text
+        except Exception as exc:  # pragma: no cover - defensive
+            response_text = f"<unavailable:{type(exc).__name__}>"
+        snippet: str
+        if isinstance(response_text, str):
+            snippet = response_text[:200]
+        else:
+            snippet = f"<non-str type={type(response_text).__name__} len={len(response_text) if hasattr(response_text, '__len__') else 'na'}>"
+        self._logger.info(
+            "[WS_BOOKS_%s][BOOTSTRAP][DEBUG_SNAPSHOT] kind=%s status_code=%s response=%s",
+            asset_key,
+            kind_label,
+            resp.status_code,
+            snippet,
+        )
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        if data is None:
+            self._logger.warning(
+                "[WS_BOOKS_%s][BOOTSTRAP][DEBUG_SNAPSHOT] kind=%s [BOOTSTRAP] snapshot response is null",
+                asset_key,
+                kind_label,
+            )
+        return data
 
     # Listener registration -------------------------------------------------
 
@@ -251,7 +286,9 @@ class HyperliquidClient:
 
             try:
                 snapshot_coin = coin if kind == "perp" else ws_snapshot_coin
-                snapshot = await self.fetch_orderbook_snapshot(snapshot_coin)
+                snapshot = await self.fetch_orderbook_snapshot(
+                    snapshot_coin, asset=coin, kind=kind
+                )
                 payload = self._extract_payload(snapshot)
                 levels = payload.get("levels") or payload
 
@@ -310,7 +347,9 @@ class HyperliquidClient:
                             fallback_coin,
                             type(exc).__name__,
                         )
-                        snapshot = await self.fetch_orderbook_snapshot(fallback_coin)
+                        snapshot = await self.fetch_orderbook_snapshot(
+                            fallback_coin, asset=coin, kind=kind
+                        )
                         payload = self._extract_payload(snapshot)
                         levels = payload.get("levels") or payload
 
