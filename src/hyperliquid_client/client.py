@@ -1299,6 +1299,8 @@ class HyperliquidClient:
     def _normalize_perp_symbol(self, base: str) -> str:
         return base.split("/")[0]
 
+    SPECIAL_SPOT_WS_CANONICAL = {"PURR/USDC"}
+
     def _resolve_spot_ws_coin(self, spot_pair: str) -> tuple[str, str]:
         """
         Resolve the coin string to use for spot l2Book subscriptions.
@@ -1307,6 +1309,11 @@ class HyperliquidClient:
         Fallback: use the explicit \"BASE/QUOTE\" pair which is accepted by the WS for spots like PURR/USDC.
         """
         pair = (spot_pair or "").strip().upper()
+        if pair in self.SPECIAL_SPOT_WS_CANONICAL:
+            primary = pair
+            fallback = pair.split("/", 1)[0]
+            return primary, fallback
+
         if "/" in pair:
             base, quote = pair.split("/", 1)
         else:
