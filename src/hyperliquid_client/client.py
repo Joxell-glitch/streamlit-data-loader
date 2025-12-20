@@ -22,7 +22,7 @@ except ImportError:  # websockets < 10 compatibility
 
 from src.config.models import APISettings
 from src.core.logging import get_logger
-from src.observability.feed_health import FeedHealthTracker
+from src.observability.feed_health import FeedHealthTracker, normalize_timestamp_seconds
 
 logger = get_logger(__name__)
 
@@ -923,14 +923,8 @@ class HyperliquidClient:
         best_ask = self._best_price(asks, reverse=False)
         best_bid = float(best_bid) if best_bid is not None else 0.0
         best_ask = float(best_ask) if best_ask is not None else 0.0
-        ts = (
-            payload.get("time")
-            or payload.get("ts")
-            or payload.get("timestamp")
-            or msg.get("time")
-            or msg.get("ts")
-            or time.time()
-        )
+        raw_ts = payload.get("time") or payload.get("ts") or payload.get("timestamp") or msg.get("time") or msg.get("ts")
+        ts = normalize_timestamp_seconds(raw_ts)
 
         norm = {"bid": best_bid, "ask": best_ask, "bids": bids, "asks": asks, "ts": ts}
 
@@ -1032,8 +1026,8 @@ class HyperliquidClient:
             mark = float(raw_mark)
         except Exception:
             mark = None
-        ts = payload.get("time") or payload.get("ts") or payload.get("timestamp") or msg.get("time") or msg.get("ts")
-        ts = ts or time.time()
+        raw_ts = payload.get("time") or payload.get("ts") or payload.get("timestamp") or msg.get("time") or msg.get("ts")
+        ts = normalize_timestamp_seconds(raw_ts)
 
         if mark is None:
             logger.debug("[WS_FEED][DEBUG] markPrice missing/invalid price: %s", msg)

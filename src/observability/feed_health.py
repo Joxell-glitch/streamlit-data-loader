@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 from src.config.models import FeedHealthSettings
+from src.core.logging import get_logger
 
 
 @dataclass
@@ -36,6 +37,19 @@ def _has_valid_book(bid: float, ask: float) -> bool:
     return bid > 0 and ask > 0 and bid < ask
 
 
+def normalize_timestamp_seconds(ts: Any) -> float:
+    """Normalize a timestamp to seconds, handling millisecond inputs."""
+    try:
+        if isinstance(ts, (int, float)):
+            if ts > 1e12:  # Milliseconds
+                return ts / 1000.0
+            if ts >= 1e9:  # Seconds
+                return float(ts)
+    except Exception:
+        pass
+    return time.time()
+
+
 class FeedHealthTracker:
     def __init__(self, settings: Optional[FeedHealthSettings] = None) -> None:
         self.settings = settings or FeedHealthSettings()
@@ -48,6 +62,8 @@ class FeedHealthTracker:
         self.out_of_sync = 0
         self._asset_health: Dict[str, AssetHealth] = {}
         self._dedup_cache: Dict[str, float] = {}
+        self._logger = get_logger(__name__)
+        self._last_out_of_sync_log: Dict[str, float] = {}
 
     def register_message(self, msg: Dict[str, Any]) -> bool:
         """Register a raw WebSocket message and return True if duplicate."""
@@ -80,7 +96,7 @@ class FeedHealthTracker:
     ) -> None:
         health = self._asset_health.setdefault(asset, AssetHealth())
         target = health.perp if kind == "perp" else health.spot
-        target.ts = float(ts) if ts else time.time()
+        target.ts = normalize_timestamp_seconds(ts)
         target.best_bid = best_bid or 0.0
         target.best_ask = best_ask or 0.0
         target.incomplete = not _has_valid_book(target.best_bid, target.best_ask)
@@ -103,10 +119,23 @@ class FeedHealthTracker:
         spot_ts = health.spot.ts
         perp_ts = health.perp.ts
         if spot_ts and perp_ts:
+            prev_out_of_sync = health.out_of_sync
             delta_ms = abs(spot_ts - perp_ts) * 1000.0
             health.out_of_sync = delta_ms > self.settings.out_of_sync_ms
             if health.out_of_sync:
                 self.out_of_sync += 1
+                now = time.time()
+                last_logged = self._last_out_of_sync_log.get(asset, 0.0)
+                if not prev_out_of_sync or now - last_logged >= 1.0:
+                    self._logger.debug(
+                        "[FEED_HEALTH][OUT_OF_SYNC] asset=%s spot_ts=%.6f perp_ts=%.6f delta_ms=%.2f threshold_ms=%s",
+                        asset,
+                        spot_ts,
+                        perp_ts,
+                        delta_ms,
+                        self.settings.out_of_sync_ms,
+                    )
+                    self._last_out_of_sync_log[asset] = now
         else:
             health.out_of_sync = False
 
@@ -180,4 +209,3 @@ class FeedHealthTracker:
     def _extract_payload(self, msg: Dict[str, Any]) -> Dict[str, Any]:
         payload = msg.get("data") or msg.get("result") or msg.get("levels") or msg.get("payload") or {}
         return payload if isinstance(payload, dict) else {}
-
