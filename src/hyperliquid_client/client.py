@@ -948,70 +948,43 @@ class HyperliquidClient:
         l2_event = self._spot_l2book_events.setdefault(asset_key, asyncio.Event())
         l2_event.clear()
 
-        async def _do_subscribe(candidate: str) -> None:
-            try:
-                await self._send_subscribe_ws(
-                    {"type": "l2Book", "coin": candidate},
-                    ws_attr="_ws_books",
-                    sent_set=self._sent_subscriptions_books[asset]["spot"],
-                    name=f"WS_BOOKS_{asset}",
-                    asset=asset,
-                )
-            except WebSocketException as exc:
-                self._sent_subscriptions_books[asset]["spot"].discard(
-                    json.dumps({"type": "l2Book", "coin": candidate}, sort_keys=True)
-                )
-                raise exc
-
+        sub_payload = {"type": "l2Book", "coin": asset, "isPerp": False}
         try:
-            await _do_subscribe(primary_coin)
-        except WebSocketException as exc:
-            if fallback_coin != primary_coin:
-                logger.info(
-                    "[WS_BOOKS_%s] SPOT WS coin resolved: %s -> %s (fallback after send failure %s)",
-                    asset_key,
-                    primary_coin,
-                    fallback_coin,
-                    type(exc).__name__,
-                )
-                await _do_subscribe(fallback_coin)
-                self._spot_ws_coin_choice[asset_key] = fallback_coin
-                await asyncio.sleep(self._subscribe_delay_ms / 1000.0)
-                return
+            await self._send_subscribe_ws(
+                sub_payload,
+                ws_attr="_ws_books",
+                sent_set=self._sent_subscriptions_books[asset]["spot"],
+                name=f"WS_BOOKS_{asset}",
+                asset=asset,
+            )
+        except WebSocketException:
+            self._sent_subscriptions_books[asset]["spot"].discard(
+                json.dumps(sub_payload, sort_keys=True)
+            )
             raise
 
+        logger.info(
+            "[WS_BOOKS_%s][INFO] SPOT WS coin resolved=%s fallback=%s -> subscribing coin=%s isPerp=%s",
+            asset_key,
+            primary_coin,
+            fallback_coin,
+            asset,
+            False,
+        )
         await asyncio.sleep(self._subscribe_delay_ms / 1000.0)
         try:
             await asyncio.wait_for(l2_event.wait(), timeout=SPOT_L2BOOK_WAIT_SECONDS)
             self._spot_ws_coin_choice.setdefault(asset_key, primary_coin)
             return
         except asyncio.TimeoutError:
-            if spot_pair.upper() in self.SPECIAL_SPOT_WS_CANONICAL:
-                self._spot_ws_coin_choice.setdefault(asset_key, primary_coin)
-                return
-            if fallback_coin == primary_coin:
-                return
-            logger.info(
-                "[WS_BOOKS_%s] SPOT WS coin resolved: %s -> %s (fallback after no l2Book)",
+            logger.warning(
+                "[WS_BOOKS_%s][WARN] no spot l2Book after %.1fs (subscription coin=%s isPerp=%s resolved=%s)",
                 asset_key,
+                SPOT_L2BOOK_WAIT_SECONDS,
+                asset,
+                False,
                 primary_coin,
-                fallback_coin,
             )
-            self._sent_subscriptions_books[asset]["spot"].discard(
-                json.dumps({"type": "l2Book", "coin": primary_coin}, sort_keys=True)
-            )
-            await _do_subscribe(fallback_coin)
-            try:
-                await asyncio.wait_for(l2_event.wait(), timeout=SPOT_L2BOOK_WAIT_SECONDS)
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "[WS_BOOKS_%s][WARN] fallback coin=%s still no l2Book after %.1fs",
-                    asset_key,
-                    fallback_coin,
-                    SPOT_L2BOOK_WAIT_SECONDS,
-                )
-            self._spot_ws_coin_choice[asset_key] = fallback_coin
-            await asyncio.sleep(self._subscribe_delay_ms / 1000.0)
 
     async def _send_subscribe_ws(
         self,
@@ -1486,13 +1459,16 @@ class HyperliquidClient:
             return None
 
         index_val = ws_coin.lstrip("@")
+        subscription_coin = asset.split("/")[0] if isinstance(asset, str) else asset
         logger.info(
-            "[WS_BOOKS_%s][INFO] SPOT WS coin resolved asset=%s pair=%s ws_coin=%s index=%s",
+            "[WS_BOOKS_%s][INFO] SPOT WS coin resolved asset=%s pair=%s ws_coin=%s index=%s subscription_coin=%s isPerp=%s",
             asset,
             asset,
             pair,
             ws_coin,
             index_val,
+            subscription_coin,
+            False,
         )
         return ws_coin
 
