@@ -944,7 +944,7 @@ class HyperliquidClient:
             primary_coin, fallback_coin = resolved
         else:
             primary_coin, fallback_coin = await self._resolve_spot_ws_coin(asset, spot_pair)
-        asset_key = spot_pair
+        asset_key = asset
         if fallback_coin:
             self._spot_symbol_to_base.setdefault(fallback_coin, asset_key)
         l2_event = self._spot_l2book_events.setdefault(asset_key, asyncio.Event())
@@ -1468,15 +1468,51 @@ class HyperliquidClient:
             logger.warning("[WS_BOOKS_%s][WARN] failed to fetch spotMetaAndAssetCtxs: %s", asset, exc)
             return None
 
+        tokens: List[Dict[str, Any]] = []
         universe = None
         if isinstance(meta, list) and meta and isinstance(meta[0], dict):
             universe = meta[0].get("universe")
+            tokens = meta[0].get("tokens") or []
         elif isinstance(meta, dict):
             universe = meta.get("universe")
+            tokens = meta.get("tokens") or []
+            spot_meta_data = meta.get("spotMeta")
+            if isinstance(spot_meta_data, dict):
+                tokens = tokens + (spot_meta_data.get("tokens") or [])
+
+        token_map: Dict[int, str] = {}
+        for token in tokens:
+            if not isinstance(token, dict):
+                continue
+            idx = token.get("index")
+            name = token.get("name")
+            if idx is None or not name:
+                continue
+            token_map[idx] = str(name).upper()
 
         ws_coin = self.extract_spot_ws_coin_from_universe(universe, pair)
         if ws_coin is None:
-            return None
+            if isinstance(universe, Iterable):
+                for entry in universe:
+                    if not isinstance(entry, dict):
+                        continue
+                    entry_tokens = entry.get("tokens")
+                    if not isinstance(entry_tokens, list) or len(entry_tokens) != 2:
+                        continue
+                    base = token_map.get(entry_tokens[0])
+                    quote = token_map.get(entry_tokens[1])
+                    if not base or not quote:
+                        continue
+                    if f"{base}/{quote}" != pair:
+                        continue
+                    try:
+                        index_val = int(entry.get("index"))
+                    except Exception:
+                        continue
+                    ws_coin = f"@{index_val}"
+                    break
+            if ws_coin is None:
+                return None
 
         index_val = ws_coin.lstrip("@")
         subscription_coin = asset.split("/")[0] if isinstance(asset, str) else asset
