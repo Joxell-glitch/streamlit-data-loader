@@ -51,7 +51,10 @@ class MarketGraph:
         quote_asset = self.settings.trading.quote_asset
         whitelist = set(a.upper() for a in self.settings.trading.whitelist)
         blacklist = set(a.upper() for a in self.settings.trading.blacklist)
-        is_hyperliquid = "hyperliquid" in (getattr(self.settings.api, "rest_base", "") or "").lower()
+        is_hyperliquid = (
+            "hyperliquid" in (getattr(self.settings.api, "rest_base", "") or "").lower()
+            or ("tokens" in spot_meta and any(isinstance(u.get("tokens"), list) and len(u.get("tokens")) == 2 for u in spot_meta.get("universe", [])))
+        )
 
         markets_total = len(pairs)
         markets_active = sum(1 for entry in pairs if entry.get("enabled", True))
