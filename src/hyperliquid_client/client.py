@@ -576,9 +576,11 @@ class HyperliquidClient:
                     if name.startswith("WS_BOOKS") and self._is_l2book(msg):
                         payload = self._extract_payload(msg)
                         coin = payload.get("coin") or payload.get("asset") or msg.get("coin") or msg.get("asset")
-                        target_asset = coin if isinstance(coin, str) else asset
-                        if target_asset:
-                            self._books_last_l2book[target_asset] = time.monotonic()
+                        now = time.monotonic()
+                        if asset:
+                            self._books_last_l2book[asset] = now
+                        if isinstance(coin, str) and coin and coin != asset:
+                            self._books_last_l2book[coin] = now
                     self._handle_ws_message(msg)
         except websockets.ConnectionClosed as e:
             self._logger.warning(
