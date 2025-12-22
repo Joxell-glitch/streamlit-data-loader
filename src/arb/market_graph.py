@@ -127,20 +127,16 @@ class MarketGraph:
             self.edges.append(Edge(base=base, quote=quote, pair=pair_name))
             self.edges.append(Edge(base=quote, quote=base, pair=pair_name))
 
-        self.triangles = self._enumerate_triangles()
+        stable_quotes = {"USD", "USDC", "USDH", "USDE", "USDT0"}
+        unique_quotes = set(quote_counter.keys())
+        no_cross_spot_reason = None
+        if is_hyperliquid and unique_quotes and unique_quotes.issubset(stable_quotes):
+            no_cross_spot_reason = "no_cross_quotes_on_spot"
+            self.last_triangle_stats["triangles_zero_reason"] = no_cross_spot_reason
 
-        if is_hyperliquid and not self.triangles:
-            stable_quotes = {"USDC", "USD", "USDH", "USDE", "USDT0"}
-            if quote_counter:
-                top_quote, top_count = quote_counter.most_common(1)[0]
-                total_quotes = sum(quote_counter.values())
-                has_only_stables = set(quote_counter.keys()).issubset(stable_quotes)
-                if (
-                    has_only_stables
-                    and top_quote in {"USDC", "USD"}
-                    and top_count / max(total_quotes, 1) > 0.8
-                ):
-                    self.last_triangle_stats["triangles_zero_reason"] = "no_cross_quotes_on_spot"
+        self.triangles = self._enumerate_triangles()
+        if no_cross_spot_reason:
+            self.last_triangle_stats["triangles_zero_reason"] = no_cross_spot_reason
 
         nodes_count = len(self.assets)
         edges_count = len(self.edges)
