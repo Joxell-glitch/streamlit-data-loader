@@ -1434,11 +1434,18 @@ class HyperliquidClient:
 
     async def _resolve_spot_ws_coin(self, asset: str, spot_pair: str) -> tuple[str, str]:
         asset_key = self._spot_symbol_to_base.get(asset, asset)
+        pair = (spot_pair or f"{asset}/USDC").upper()
+
+        if pair in self.SPECIAL_SPOT_WS_CANONICAL:
+            self._spot_ws_coin_choice[asset_key] = pair
+            self._spot_symbol_to_base.setdefault(pair, asset_key)
+            return pair, pair
+
         existing = self._spot_ws_coin_choice.get(asset_key)
         if existing:
             return existing, existing
 
-        resolved = await self._resolve_spot_ws_coin_from_universe(asset_key, spot_pair)
+        resolved = await self._resolve_spot_ws_coin_from_universe(asset_key, pair)
         if resolved:
             self._spot_ws_coin_choice[asset_key] = resolved
             self._spot_symbol_to_base.setdefault(resolved, asset_key)

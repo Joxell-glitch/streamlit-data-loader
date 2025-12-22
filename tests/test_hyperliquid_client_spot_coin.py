@@ -40,3 +40,18 @@ def test_resolve_spot_ws_coin_prefers_pair_when_unresolved(monkeypatch: pytest.M
     assert primary == "PURR/USDC"
     assert fallback == "PURR/USDC"
     assert client.get_resolved_spot_coin("PURR") == "PURR/USDC"
+
+
+def test_resolve_spot_ws_coin_uses_canonical_pair(monkeypatch: pytest.MonkeyPatch):
+    client = _make_client()
+
+    async def _fail_resolve(*_: str) -> None:
+        raise AssertionError("should not call universe resolve for canonical pairs")
+
+    monkeypatch.setattr(client, "_resolve_spot_ws_coin_from_universe", _fail_resolve)
+
+    primary, fallback = asyncio.run(client._resolve_spot_ws_coin("purr", "purr/usdc"))
+
+    assert primary == "PURR/USDC"
+    assert fallback == "PURR/USDC"
+    assert client.get_resolved_spot_coin("purr") == "PURR/USDC"
