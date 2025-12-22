@@ -126,6 +126,19 @@ class MarketGraph:
 
         self.triangles = self._enumerate_triangles()
 
+        if is_hyperliquid and not self.triangles:
+            stable_quotes = {"USDC", "USD", "USDH", "USDE", "USDT0"}
+            if quote_counter:
+                top_quote, top_count = quote_counter.most_common(1)[0]
+                total_quotes = sum(quote_counter.values())
+                has_only_stables = set(quote_counter.keys()).issubset(stable_quotes)
+                if (
+                    has_only_stables
+                    and top_quote in {"USDC", "USD"}
+                    and top_count / max(total_quotes, 1) > 0.8
+                ):
+                    self.last_triangle_stats["triangles_zero_reason"] = "no_cross_quotes_on_spot"
+
         nodes_count = len(self.assets)
         edges_count = len(self.edges)
         max_sample_edges = min(max_sample_edges, 10)
