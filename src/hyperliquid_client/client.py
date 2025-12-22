@@ -948,7 +948,16 @@ class HyperliquidClient:
         l2_event = self._spot_l2book_events.setdefault(asset_key, asyncio.Event())
         l2_event.clear()
 
-        sub_payload = {"type": "l2Book", "coin": asset, "isPerp": False}
+        payload_coin = primary_coin or fallback_coin or spot_pair
+        if payload_coin == asset or (
+            payload_coin and not payload_coin.startswith("@") and "/" not in payload_coin
+        ):
+            payload_coin = fallback_coin or spot_pair
+        if payload_coin:
+            self._spot_symbol_to_base.setdefault(payload_coin, asset_key)
+            self._spot_ws_coin_choice.setdefault(asset_key, payload_coin)
+
+        sub_payload = {"type": "l2Book", "coin": payload_coin, "isPerp": False}
         try:
             await self._send_subscribe_ws(
                 sub_payload,
@@ -964,24 +973,26 @@ class HyperliquidClient:
             raise
 
         logger.info(
-            "[WS_BOOKS_%s][INFO] SPOT WS coin resolved=%s fallback=%s -> subscribing coin=%s isPerp=%s",
+            "[WS_BOOKS_%s][INFO] SPOT WS coin resolved=%s fallback=%s spot_pair=%s -> subscribing coin=%s isPerp=%s",
             asset_key,
             primary_coin,
             fallback_coin,
-            asset,
+            spot_pair,
+            payload_coin,
             False,
         )
         await asyncio.sleep(self._subscribe_delay_ms / 1000.0)
         try:
             await asyncio.wait_for(l2_event.wait(), timeout=SPOT_L2BOOK_WAIT_SECONDS)
-            self._spot_ws_coin_choice.setdefault(asset_key, primary_coin)
+            if payload_coin:
+                self._spot_ws_coin_choice.setdefault(asset_key, payload_coin)
             return
         except asyncio.TimeoutError:
             logger.warning(
                 "[WS_BOOKS_%s][WARN] no spot l2Book after %.1fs (subscription coin=%s isPerp=%s resolved=%s)",
                 asset_key,
                 SPOT_L2BOOK_WAIT_SECONDS,
-                asset,
+                payload_coin,
                 False,
                 primary_coin,
             )
@@ -1481,21 +1492,20 @@ class HyperliquidClient:
         """
         pair = (spot_pair or "").strip().upper()
         if pair in self.SPECIAL_SPOT_WS_CANONICAL:
-            primary = pair
-            fallback = pair.split("/", 1)[0]
-            return primary, fallback
+            return pair, pair
 
         if "/" in pair:
             base, quote = pair.split("/", 1)
         else:
             base, quote = pair, "USDC"
 
-        primary = base
+        pair_symbol = f"{base}/{quote}"
         if base.startswith("@"):
             primary = base
+        else:
+            primary = pair_symbol
 
-        fallback = f"{base}/{quote}"
-        return primary, fallback
+        return primary, pair_symbol
 
     @staticmethod
     def extract_spot_ws_coin_from_universe(

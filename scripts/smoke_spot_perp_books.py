@@ -88,6 +88,12 @@ async def main(duration: float, timeout: float) -> None:
         _subscribe_books(spot_client, spot_symbol_map, kind="spot"),
         _subscribe_books(perp_client, perp_symbol_map, kind="perp"),
     )
+    resolved_spot_coin = (
+        spot_client.get_resolved_spot_coin(spot_pair)
+        or spot_client.get_resolved_spot_coin(spot_client._normalize_spot_symbol(spot_pair))
+    )
+    print(f"requested spot_pair={spot_pair}")
+    print(f"spot subscribe payload coin={resolved_spot_coin or 'UNKNOWN'}")
 
     async def _timeout(kind: str) -> None:
         try:
