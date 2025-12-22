@@ -62,16 +62,30 @@ class MarketGraph:
         quote_counter: Counter[str] = Counter()
         base_counter: Counter[str] = Counter()
         cross_quote_examples: List[str] = []
+        token_map: Dict[int, str] = {}
+
+        if is_hyperliquid:
+            for token in spot_meta.get("tokens", []):
+                idx = token.get("index")
+                name = token.get("name")
+                if idx is not None and name:
+                    token_map[idx] = str(name).upper()
 
         for entry in pairs:
-            pair_name = entry.get("pair")
             if is_hyperliquid:
-                symbol = entry.get("name") or entry.get("coin") or entry.get("base") or entry.get("symbol") or entry.get("pair")
-                if not symbol:
+                entry_tokens = entry.get("tokens")
+                if not entry_tokens or len(entry_tokens) != 2:
                     skipped_missing_base += 1
                     continue
-                base = symbol.upper()
-                quote = quote_asset.upper()
+                base_id, quote_id = entry_tokens
+                base = token_map.get(base_id)
+                quote = token_map.get(quote_id)
+                if not base or not quote:
+                    skipped_missing_base += 1
+                    continue
+                if whitelist and base not in whitelist and quote not in whitelist:
+                    skipped_whitelist += 1
+                    continue
             else:
                 base = entry.get("base") or entry.get("coin")
                 quote = entry.get("quote") or quote_asset
@@ -86,6 +100,11 @@ class MarketGraph:
             if base in blacklist or quote in blacklist:
                 skipped_blacklist += 1
                 continue
+            pair_name = entry.get("pair")
+            if is_hyperliquid and entry.get("isCanonical"):
+                entry_name = entry.get("name")
+                if isinstance(entry_name, str) and "/" in entry_name:
+                    pair_name = entry_name.upper()
             pair_name = pair_name or f"{base}/{quote}"
             used_pairs.add(pair_name)
             base_counter[base] += 1
@@ -95,8 +114,6 @@ class MarketGraph:
                 cross_quote_examples.append(
                     f"{pair_name}|base={base} quote={quote} isPerp=False isSpot=True kind={market_kind}"
                 )
-            if is_hyperliquid:
-                logger.info("[GRAPH][INFO] hyperliquid_market accepted base=%s quote=%s", base, quote)
             self.edges.append(Edge(base=base, quote=quote, pair=pair_name))
             self.edges.append(Edge(base=quote, quote=base, pair=pair_name))
 
