@@ -944,7 +944,7 @@ class HyperliquidClient:
             primary_coin, fallback_coin = resolved
         else:
             primary_coin, fallback_coin = await self._resolve_spot_ws_coin(asset, spot_pair)
-        asset_key = self._spot_symbol_to_base.get(asset, spot_pair) or asset
+        asset_key = spot_pair
         if fallback_coin:
             self._spot_symbol_to_base.setdefault(fallback_coin, asset_key)
         l2_event = self._spot_l2book_events.setdefault(asset_key, asyncio.Event())
