@@ -10,6 +10,7 @@ from src.config.loader import load_config
 from src.core.logging import get_logger, setup_logging
 from src.db.session import get_session, init_db
 from src.hyperliquid_client.client import HyperliquidClient
+from src.cli.spot_perp_assets import select_auto_assets
 from src.strategy.spot_perp_paper import SpotPerpPaperEngine
 from src.db.models import SpotPerpOpportunity
 from src.observability.feed_health import FeedHealthTracker
@@ -21,6 +22,8 @@ async def _run_engine(
     config_path: str,
     debug_feeds: bool = False,
     assets_arg: Optional[str] = None,
+    auto_assets: bool = False,
+    auto_assets_n: int = 15,
     would_trade_override: Optional[bool] = None,
     trace_every_seconds_override: Optional[int] = None,
 ) -> None:
@@ -58,11 +61,15 @@ async def _run_engine(
     else:
         logger.info("[VALIDATION] enabled=false")
 
-    assets = [a.strip().upper() for a in assets_arg.split(",") if a.strip()] if assets_arg else ["BTC"]
-    logger.info("Starting spot-perp paper engine for assets: %s", ", ".join(assets))
-
     feed_health = FeedHealthTracker(settings.observability.feed_health)
     client = HyperliquidClient(settings.api, settings.network, feed_health_tracker=feed_health)
+    if assets_arg:
+        assets = [a.strip().upper() for a in assets_arg.split(",") if a.strip()]
+    elif auto_assets:
+        assets = await select_auto_assets(client, limit=auto_assets_n)
+    else:
+        assets = ["BTC"]
+    logger.info("Starting spot-perp paper engine for assets: %s", ", ".join(assets))
     session_factory = get_session(settings)
     engine = SpotPerpPaperEngine(
         client,
@@ -100,6 +107,17 @@ def main(config_path: Optional[str] = "config/config.yaml") -> None:
         "--assets",
         default=None,
         help="Comma-separated list of asset symbols to track (e.g. BTC,ETH,SOL)",
+    )
+    parser.add_argument(
+        "--auto-assets",
+        action="store_true",
+        help="Auto-select assets with both spot and perp markets",
+    )
+    parser.add_argument(
+        "--auto-assets-n",
+        type=int,
+        default=15,
+        help="Number of assets to auto-select when --auto-assets is enabled",
     )
     parser.add_argument(
         "--status-only",
@@ -147,6 +165,8 @@ def main(config_path: Optional[str] = "config/config.yaml") -> None:
             args.config,
             debug_feeds=args.debug_feeds,
             assets_arg=args.assets,
+            auto_assets=args.auto_assets,
+            auto_assets_n=args.auto_assets_n,
             would_trade_override=args.would_trade,
             trace_every_seconds_override=args.trace_every_seconds,
         )
