@@ -45,9 +45,9 @@ class HyperliquidClient:
         self.feed_health_tracker = feed_health_tracker
         self._ws_market: Optional[WebSocketClientProtocol] = None
         self._ws_books: Dict[str, WebSocketClientProtocol] = {}
-        self._ws_lock = asyncio.Lock()
+        self._ws_lock = None
         self._session = httpx.AsyncClient(timeout=10.0)
-        self._connected_event = asyncio.Event()
+        self._connected_event = None
         # Market data caches
         self._orderbooks_spot: Dict[str, Dict[str, Any]] = {}
         self._orderbooks_perp: Dict[str, Dict[str, Any]] = {}
@@ -83,14 +83,15 @@ class HyperliquidClient:
         self._spot_first_valid_book_logged: set[str] = set()
         self._l2book_level_format_warned: set[str] = set()
         self._l2book_kind_logged: set[str] = set()
-        self._first_data_event = asyncio.Event()
+        self._first_data_event = None
         self._payload_shape_logged = False
         self._payload_type_warned = False
         self._spot_meta_cache: Optional[Any] = None
         self._spot_meta_cache_time: float = 0.0
-        self._connected_event_market = asyncio.Event()
-        self._connected_event_books = asyncio.Event()
-        self._connected_event_books.set()
+        self._connected_event_market = None
+        self._connected_event_books = None
+        if self._connected_event_books is not None:
+            self._get_connected_event_books().set()
         self._books_connected_events: Dict[str, asyncio.Event] = {}
         self._logger = logger
         self._subscribe_delay_ms = self._get_subscribe_delay_ms()
@@ -119,6 +120,78 @@ class HyperliquidClient:
     @property
     def websocket_url(self) -> str:
         return self.api_settings.websocket_url if self.network == "mainnet" else self.api_settings.testnet_websocket_url
+
+
+    def _get_ws_lock(self) -> "asyncio.Lock":
+
+        if self._ws_lock is None:
+
+            self._ws_lock = asyncio.Lock()
+
+        return self._ws_lock
+
+
+
+    def _get_connected_event(self) -> "asyncio.Event":
+
+
+        if self._connected_event is None:
+
+
+            self._connected_event = asyncio.Event()
+
+
+        return self._connected_event
+
+
+
+    def _get_first_data_event(self) -> "asyncio.Event":
+
+
+        if self._first_data_event is None:
+
+
+            self._first_data_event = asyncio.Event()
+
+
+        return self._first_data_event
+
+
+
+
+    def _get_connected_event_market(self) -> "asyncio.Event":
+
+
+
+        if self._connected_event_market is None:
+
+
+
+            self._connected_event_market = asyncio.Event()
+
+
+
+        return self._connected_event_market
+
+
+
+
+    def _get_connected_event_books(self) -> "asyncio.Event":
+
+
+
+        if self._connected_event_books is None:
+
+
+
+            self._connected_event_books = asyncio.Event()
+
+
+
+        return self._connected_event_books
+
+
+
 
     async def fetch_info(self) -> Dict[str, Any]:
         url = f"{self.rest_base}{self.api_settings.info_path}"
@@ -212,9 +285,9 @@ class HyperliquidClient:
     # WebSocket lifecycle ---------------------------------------------------
 
     async def connect_ws(self) -> None:
-        async with self._ws_lock:
+        async with self._get_ws_lock():
             if self._ws_runner_task_market and not self._ws_runner_task_market.done():
-                await self._connected_event.wait()
+                await self._get_connected_event().wait()
                 return
             self._stopped = False
             if not self._ws_runner_task_market or self._ws_runner_task_market.done():
@@ -225,10 +298,10 @@ class HyperliquidClient:
                         set_ws_attr="_ws_market",
                         recv_task_attr="_recv_task_market",
                         sent_set=self._sent_subscriptions_market,
-                        connected_event=self._connected_event_market,
+                        connected_event=self._get_connected_event_market(),
                     )
                 )
-        await self._connected_event.wait()
+        await self._get_connected_event().wait()
 
     async def subscribe_orderbooks(
         self,
@@ -471,12 +544,12 @@ class HyperliquidClient:
         if runner and not runner.done():
             return
         self._stopped = False
-        self._connected_event_books.clear()
+        self._get_connected_event_books().clear()
         self._update_connected_event()
         self._ws_runner_tasks_books[asset] = asyncio.create_task(self._run_book_ws_loop(asset))
 
     async def subscribe_mark_prices(self, symbol_map: Dict[str, str]) -> None:
-        await self._connected_event_market.wait()
+        await self._get_connected_event_market().wait()
         if not self._ws_market:
             raise RuntimeError("WebSocket not connected")
         for coin, base in symbol_map.items():
@@ -684,8 +757,8 @@ class HyperliquidClient:
                 await recv_task
             except websockets.ConnectionClosed as e:
                 self._books_connected_events[asset].clear()
-                self._connected_event_books.clear()
-                self._connected_event.clear()
+                self._get_connected_event_books().clear()
+                self._get_connected_event().clear()
                 books_failure_streak += 1
                 self._register_reconnect("books", asset, type(e).__name__)
                 base_delay = min(self._reconnect_delay * (2 ** (books_failure_streak - 1)), 30)
@@ -700,8 +773,8 @@ class HyperliquidClient:
                 self._update_books_connected_event()
             except Exception as e:  # pragma: no cover - defensive
                 self._books_connected_events[asset].clear()
-                self._connected_event_books.clear()
-                self._connected_event.clear()
+                self._get_connected_event_books().clear()
+                self._get_connected_event().clear()
                 books_failure_streak += 1
                 self._register_reconnect("books", asset, type(e).__name__)
                 base_delay = min(self._reconnect_delay * (2 ** (books_failure_streak - 1)), 30)
@@ -765,7 +838,7 @@ class HyperliquidClient:
                 await recv_task
             except websockets.ConnectionClosed as e:
                 connected_event.clear()
-                self._connected_event.clear()
+                self._get_connected_event().clear()
                 if name == "WS_BOOKS":
                     books_failure_streak += 1
                     self._register_reconnect("books", None, type(e).__name__)
@@ -787,7 +860,7 @@ class HyperliquidClient:
                     )
             except Exception as e:  # pragma: no cover - defensive
                 connected_event.clear()
-                self._connected_event.clear()
+                self._get_connected_event().clear()
                 if name == "WS_BOOKS":
                     books_failure_streak += 1
                     self._register_reconnect("books", None, type(e).__name__)
@@ -815,7 +888,7 @@ class HyperliquidClient:
         connected_event: asyncio.Event,
     ) -> None:
         connected_event.clear()
-        self._connected_event.clear()
+        self._get_connected_event().clear()
         sent_set.clear()
         recv_task = getattr(self, recv_task_attr)
         if recv_task and not recv_task.done():
@@ -833,8 +906,8 @@ class HyperliquidClient:
     async def _reset_book_connection(self, asset: str) -> None:
         event = self._books_connected_events.setdefault(asset, asyncio.Event())
         event.clear()
-        self._connected_event_books.clear()
-        self._connected_event.clear()
+        self._get_connected_event_books().clear()
+        self._get_connected_event().clear()
         sent_set = self._sent_subscriptions_books.get(asset)
         if sent_set is not None:
             for kind_set in sent_set.values():
@@ -854,21 +927,21 @@ class HyperliquidClient:
         self._update_books_connected_event()
 
     def _update_connected_event(self) -> None:
-        if self._connected_event_market.is_set() and self._connected_event_books.is_set():
-            self._connected_event.set()
+        if self._get_connected_event_market().is_set() and self._get_connected_event_books().is_set():
+            self._get_connected_event().set()
         else:
-            self._connected_event.clear()
+            self._get_connected_event().clear()
 
     def _update_books_connected_event(self) -> None:
         active_assets = [asset for asset, task in self._ws_runner_tasks_books.items() if task and not task.done()]
         if not active_assets:
-            self._connected_event_books.set()
+            self._get_connected_event_books().set()
         else:
             ready = all(self._books_connected_events.get(asset) and self._books_connected_events[asset].is_set() for asset in active_assets)
             if ready:
-                self._connected_event_books.set()
+                self._get_connected_event_books().set()
             else:
-                self._connected_event_books.clear()
+                self._get_connected_event_books().clear()
         self._update_connected_event()
 
     async def _resubscribe_market(self, is_reconnect: bool) -> None:
