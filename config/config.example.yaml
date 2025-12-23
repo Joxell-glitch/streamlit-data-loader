@@ -13,6 +13,12 @@ trading:
   max_position_size: 500.0
   min_edge_threshold: 0.001
   safety_slippage_buffer: 0.0005
+  spot_fee_mode: maker
+  perp_fee_mode: maker
+  maker_fee_spot: 0.0
+  maker_fee_perp: 0.0
+  taker_fee_spot: 0.001
+  taker_fee_perp: 0.0005
   max_concurrent_triangles: 5
   top_n_opportunities: 20
   max_assets_per_ws: 50

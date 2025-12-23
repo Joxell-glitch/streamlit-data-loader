@@ -23,6 +23,10 @@ HL_TIER_0_FEE_TAKER_PERP = 0.0005
 HL_TIER_LABEL = "HL_TIER_0"
 
 
+def now_ms() -> int:
+    return int(time.time() * 1000)
+
+
 @dataclass
 class BookSnapshot:
     best_bid: float = 0.0
@@ -153,6 +157,10 @@ class SpotPerpPaperEngine:
         self._validation_config_provided = validation_settings is not None
         self.taker_fee_spot = taker_fee_spot
         self.taker_fee_perp = taker_fee_perp
+        self.maker_fee_spot = getattr(trading, "maker_fee_spot", 0.0)
+        self.maker_fee_perp = getattr(trading, "maker_fee_perp", 0.0)
+        self.spot_fee_mode = str(getattr(trading, "spot_fee_mode", "maker")).lower()
+        self.perp_fee_mode = str(getattr(trading, "perp_fee_mode", "maker")).lower()
         self.db_session_factory = db_session_factory
         self.feed_health = feed_health_tracker or FeedHealthTracker(feed_health_settings)
         self.client.set_feed_health_tracker(self.feed_health)
@@ -219,6 +227,10 @@ class SpotPerpPaperEngine:
         self._maker_probe_counter = 0
         self._ensure_maker_probe_table()
 
+    @staticmethod
+    def _resolve_fee_rate(mode: str, maker_rate: float, taker_rate: float) -> float:
+        return maker_rate if str(mode).lower() == "maker" else taker_rate
+
     def _init_spot_proxy_maps(self) -> None:
         overrides = {key.upper(): value for key, value in (self.trading.spot_pair_overrides or {}).items()}
         quote = (self.trading.quote_asset or "USDC").upper()
@@ -273,9 +285,7 @@ class SpotPerpPaperEngine:
         perp_bid: float,
         perp_ask: float,
     ) -> None:
-        ts_now = time.time()
-        ts_epoch = int(ts_now)
-        ts_ms = int(ts_now * 1000)
+        ts_ms = now_ms()
         spot_snapshot = {"ts": ts_ms, "bid": spot_bid, "ask": spot_ask}
         perp_snapshot = {"ts": ts_ms, "bid": perp_bid, "ask": perp_ask}
         try:
@@ -296,27 +306,40 @@ class SpotPerpPaperEngine:
                     last_probe.spot_ask_next = spot_ask
                     last_probe.perp_bid_next = perp_bid
                     last_probe.perp_ask_next = perp_ask
-                    last_probe.dt_next_ms = max(0.0, float((ts_epoch - (last_probe.ts or ts_epoch)) * 1000))
-                session.add(
-                    MakerProbe(
-                        ts=ts_epoch,
-                        asset=asset,
-                        direction=direction,
-                        spot_bid=spot_curr.get("bid") if spot_curr else None,
-                        spot_ask=spot_curr.get("ask") if spot_curr else None,
-                        perp_bid=perp_curr.get("bid") if perp_curr else None,
-                        perp_ask=perp_curr.get("ask") if perp_curr else None,
-                        spot_maker_px=spot_px,
-                        perp_maker_px=perp_px,
-                        spot_bid_next=spot_next.get("bid") if spot_next else None,
-                        spot_ask_next=spot_next.get("ask") if spot_next else None,
-                        perp_bid_next=perp_next.get("bid") if perp_next else None,
-                        perp_ask_next=perp_next.get("ask") if perp_next else None,
-                        # -1 means we have not yet observed the next relevant event for this probe.
-                        dt_next_ms=-1.0,
+                    last_probe.dt_next_ms = max(0.0, float(now_ms() - (last_probe.ts or now_ms())))
+                    logger.info(
+                        "[SPOT_PERP][MAKER_PROBE] update_next id=%s ts=%s dt_next_ms=%.2f",
+                        last_probe.id,
+                        last_probe.ts,
+                        last_probe.dt_next_ms,
                     )
+                new_probe = MakerProbe(
+                    ts=ts_ms,
+                    asset=asset,
+                    direction=direction,
+                    spot_bid=spot_curr.get("bid") if spot_curr else None,
+                    spot_ask=spot_curr.get("ask") if spot_curr else None,
+                    perp_bid=perp_curr.get("bid") if perp_curr else None,
+                    perp_ask=perp_curr.get("ask") if perp_curr else None,
+                    spot_maker_px=spot_px,
+                    perp_maker_px=perp_px,
+                    spot_bid_next=spot_next.get("bid") if spot_next else None,
+                    spot_ask_next=spot_next.get("ask") if spot_next else None,
+                    perp_bid_next=perp_next.get("bid") if perp_next else None,
+                    perp_ask_next=perp_next.get("ask") if perp_next else None,
+                    # -1 means we have not yet observed the next relevant event for this probe.
+                    dt_next_ms=-1.0,
                 )
+                session.add(new_probe)
+                session.flush()
                 session.commit()
+                logger.info(
+                    "[SPOT_PERP][MAKER_PROBE] insert id=%s asset=%s ts=%s dt_next_ms=%.2f",
+                    new_probe.id,
+                    asset,
+                    ts_ms,
+                    -1.0,
+                )
                 self._maker_probe_counter += 1
                 if self._maker_probe_counter % 5 == 0:
                     self._log_recent_maker_probes(session)
@@ -335,10 +358,12 @@ class SpotPerpPaperEngine:
         if not rows:
             return
         rows = list(reversed(rows))
+        # SQLite helper: SELECT datetime(ts/1000,'unixepoch') AS ts_utc, * FROM maker_probes ORDER BY id DESC LIMIT 5;
         formatted = [
             {
                 "id": row.id,
                 "ts": row.ts,
+                "ts_iso": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime((row.ts or 0) / 1000)),
                 "dt_next_ms": row.dt_next_ms,
                 "asset": row.asset,
                 "direction": row.direction,
@@ -973,6 +998,13 @@ class SpotPerpPaperEngine:
             (spot_bid - perp.best_ask) / spot_bid if perp.best_ask > 0 else float("-inf")
         )
 
+        spot_mid = (spot_bid + spot_ask) / 2 if spot_bid > 0 and spot_ask > 0 else 0.0
+        perp_mid = (perp.best_bid + perp.best_ask) / 2 if perp.best_bid > 0 and perp.best_ask > 0 else 0.0
+        spot_spread = max(0.0, spot_ask - spot_bid)
+        perp_spread = max(0.0, perp.best_ask - perp.best_bid)
+        spot_spread_bps = spot_spread / spot_mid if spot_mid > 0 else 0.0
+        perp_spread_bps = perp_spread / perp_mid if perp_mid > 0 else 0.0
+
         if spread_long >= spread_short:
             spread_gross = spread_long
             direction = "spot_long"
@@ -988,18 +1020,24 @@ class SpotPerpPaperEngine:
             spot_label = "spot_bid"
             perp_label = "perp_ask"
 
-        fee_spot = self.taker_fee_spot * notional
-        fee_perp = self.taker_fee_perp * notional
-        pnl_net = spread_gross * notional - fee_spot - fee_perp - funding_estimate
+        fee_spot_rate = self._resolve_fee_rate(self.spot_fee_mode, self.maker_fee_spot, self.taker_fee_spot)
+        fee_perp_rate = self._resolve_fee_rate(self.perp_fee_mode, self.maker_fee_perp, self.taker_fee_perp)
+        fee_spot = fee_spot_rate * notional
+        fee_perp = fee_perp_rate * notional
         gross_pnl_est = spread_gross * notional
         fee_est = fee_spot + fee_perp
-        slippage_est = getattr(self.trading, "safety_slippage_buffer", 0.0) * notional
+        safety_buffer_bps = getattr(self.trading, "safety_slippage_buffer", 0.0)
+        slippage_bps = 0.5 * (spot_spread_bps + perp_spread_bps) + safety_buffer_bps
+        slippage_est = slippage_bps * notional
+        pnl_net = gross_pnl_est - fee_est - slippage_est - funding_estimate
+        total_cost_bps = (fee_est + slippage_est) / notional if notional > 0 else 0.0
         qty = notional / spot_px if spot_px > 0 else 0.0
         if os.environ.get("SPOT_PERP_FORCE_PASS") == "1":
             pnl_net = abs(pnl_net) + 1e-6
             logger.info("[SPOT_PERP][TEST] force_pass=1 pnl_net_est_overridden")
         min_edge_threshold = getattr(self.trading, "min_edge_threshold", 0.0)
-        below_min_edge = spread_gross < min_edge_threshold
+        min_required_edge = max(min_edge_threshold, total_cost_bps)
+        below_min_edge = spread_gross < min_required_edge
         pnl_nonpos = pnl_net <= 0
         decision = "PASS"
         reject_reason = "OK"
@@ -1039,7 +1077,7 @@ class SpotPerpPaperEngine:
         logger.info(
             (
                 "[SPOT_PERP][FILTER] asset=%s spread_gross=%+.6f gross_pnl_est=%+.6f fee_est=%+.6f "
-                "slippage_est=%+.6f notional_usd=%.6f qty=%.6f pnl_net_est=%+.6f decision=%s "
+                "slippage_est=%+.6f total_cost_bps=%+.6f notional_usd=%.6f qty=%.6f pnl_net_est=%+.6f decision=%s "
                 "reason=%s"
             ),
             asset,
@@ -1047,6 +1085,7 @@ class SpotPerpPaperEngine:
             gross_pnl_est,
             fee_est,
             slippage_est,
+            total_cost_bps * 10000,
             notional,
             qty,
             pnl_net,

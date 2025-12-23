@@ -22,6 +22,12 @@ class TradingSettings:
     min_edge_threshold: float
     safety_slippage_buffer: float
     max_concurrent_triangles: int
+    spot_fee_mode: str = "maker"
+    perp_fee_mode: str = "maker"
+    maker_fee_spot: float = 0.0
+    maker_fee_perp: float = 0.0
+    taker_fee_spot: float = 0.001
+    taker_fee_perp: float = 0.0005
     whitelist: List[str] = field(default_factory=list)
     blacklist: List[str] = field(default_factory=list)
     spot_pair_overrides: Dict[str, str] = field(default_factory=dict)
