@@ -260,6 +260,7 @@ class HyperliquidClient:
         for coin, base in items:
             ws_snapshot_coin = coin
             fallback_coin: Optional[str] = None
+            payload_coin_override: Optional[str] = None
             if kind == "perp":
                 perp_key = f"perp:{coin}"
                 self._perp_subscriptions.add(perp_key)
@@ -279,6 +280,9 @@ class HyperliquidClient:
                     ws_snapshot_coin = primary_coin
                 if fallback_coin and fallback_coin != primary_coin:
                     self._spot_symbol_to_base[fallback_coin] = base
+                payload_coin_override = self._compute_spot_payload_coin(
+                    coin, pair, primary_coin, fallback_coin
+                )
 
             await self._ensure_books_runner(coin)
             await self._books_connected_events[coin].wait()
@@ -292,10 +296,24 @@ class HyperliquidClient:
                 logger.info(
                     "[WS_BOOKS_%s][WS_FEED] dual_subscribe spot+perp for same coin", coin
                 )
+            sub_key = (
+                self._build_l2book_key(payload_coin_override, False)
+                if kind == "spot"
+                else self._build_l2book_key(coin, True)
+            )
+            sent_set = self._sent_subscriptions_books.get(coin, {}).get(kind) or set()
+            if sub_key and sub_key in sent_set:
+                logger.info(
+                    "[WS_BOOKS_%s][WS_FEED] skipping duplicate l2Book subscribe key=%s kind=%s",
+                    coin,
+                    sub_key,
+                    kind,
+                )
+                continue
             logger.info("[WS_BOOKS_%s] subscribing single l2Book: %s (%s)", coin, coin, kind)
 
             try:
-                snapshot_coin = coin if kind == "perp" else ws_snapshot_coin
+                snapshot_coin = coin if kind == "perp" else payload_coin_override or ws_snapshot_coin
                 snapshot = await self.fetch_orderbook_snapshot(
                     snapshot_coin, asset=coin, kind=kind
                 )
@@ -438,7 +456,9 @@ class HyperliquidClient:
 
             if kind == "spot":
                 spot_pair = self._spot_pair_map.get(coin) or base
-                await self._subscribe_spot_books(coin, spot_pair, (ws_snapshot_coin, fallback_coin))
+                await self._subscribe_spot_books(
+                    coin, spot_pair, (ws_snapshot_coin, fallback_coin), payload_coin_override
+                )
             else:
                 await self._subscribe_books(coin, kind, coin)
 
@@ -958,7 +978,11 @@ class HyperliquidClient:
         await asyncio.sleep(self._subscribe_delay_ms / 1000.0)
 
     async def _subscribe_spot_books(
-        self, asset: str, spot_pair: str, resolved: Optional[tuple[str, str]] = None
+        self,
+        asset: str,
+        spot_pair: str,
+        resolved: Optional[tuple[str, str]] = None,
+        payload_coin: Optional[str] = None,
     ) -> None:
         if os.getenv("HL_DISABLE_L2BOOK", "0") == "1":
             logger.info("[WS_FEED] HL_DISABLE_L2BOOK=1 -> skipping l2Book subscriptions")
@@ -978,11 +1002,9 @@ class HyperliquidClient:
         l2_event.clear()
         snapshot_seen = asset_key in self._books_snapshot_applied
 
-        payload_coin = primary_coin or fallback_coin or spot_pair
-        if payload_coin == asset or (
-            payload_coin and not payload_coin.startswith("@") and "/" not in payload_coin
-        ):
-            payload_coin = fallback_coin or spot_pair
+        payload_coin = payload_coin or self._compute_spot_payload_coin(
+            asset_key, spot_pair, primary_coin, fallback_coin
+        )
         if payload_coin:
             self._spot_symbol_to_base.setdefault(payload_coin, asset_key)
             self._spot_ws_coin_choice.setdefault(asset_key, payload_coin)
@@ -1511,6 +1533,13 @@ class HyperliquidClient:
             return resolved, resolved
 
         primary, fallback = self._legacy_resolve_spot_ws_coin(spot_pair)
+        if primary and not str(primary).startswith("@"):
+            logger.warning(
+                "[WS_BOOKS_%s][WARN] spot index not found for pair=%s -> falling back to %s",
+                asset_key,
+                pair,
+                primary,
+            )
         self._spot_ws_coin_choice.setdefault(asset_key, primary)
         self._spot_symbol_to_base.setdefault(primary, asset_key)
         if fallback != primary:
@@ -1527,15 +1556,20 @@ class HyperliquidClient:
 
         tokens: List[Dict[str, Any]] = []
         universe = None
+        spot_meta_data: Optional[Dict[str, Any]] = None
         if isinstance(meta, list) and meta and isinstance(meta[0], dict):
             universe = meta[0].get("universe")
             tokens = meta[0].get("tokens") or []
+            spot_meta_data = meta[0].get("spotMeta")
         elif isinstance(meta, dict):
             universe = meta.get("universe")
             tokens = meta.get("tokens") or []
             spot_meta_data = meta.get("spotMeta")
-            if isinstance(spot_meta_data, dict):
-                tokens = tokens + (spot_meta_data.get("tokens") or [])
+
+        if isinstance(spot_meta_data, dict):
+            tokens = tokens + (spot_meta_data.get("tokens") or [])
+            if universe is None:
+                universe = spot_meta_data.get("universe")
 
         token_map: Dict[int, str] = {}
         for token in tokens:
@@ -1639,6 +1673,20 @@ class HyperliquidClient:
         """
         asset_key = self._spot_symbol_to_base.get(asset, asset)
         return self._spot_ws_coin_choice.get(asset_key)
+
+    def _compute_spot_payload_coin(
+        self,
+        asset: str,
+        spot_pair: str,
+        primary_coin: Optional[str],
+        fallback_coin: Optional[str],
+    ) -> str:
+        payload_coin = primary_coin or fallback_coin or spot_pair
+        if payload_coin == asset or (
+            payload_coin and not payload_coin.startswith("@") and "/" not in payload_coin
+        ):
+            payload_coin = fallback_coin or spot_pair
+        return payload_coin
 
     async def wait_for_spot_l2book(self, asset: str, timeout: float = SPOT_L2BOOK_WAIT_SECONDS) -> bool:
         """
