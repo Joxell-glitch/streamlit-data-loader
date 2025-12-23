@@ -99,6 +99,7 @@ def apply_env_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
 
     raw.setdefault("trading", {})
     raw["trading"].setdefault("spot_pair_overrides", {})
+    raw["trading"].setdefault("fee_mode", "maker")
     raw["trading"].setdefault("spot_fee_mode", "maker")
     raw["trading"].setdefault("perp_fee_mode", "maker")
     raw["trading"].setdefault("maker_fee_spot", 0.0)

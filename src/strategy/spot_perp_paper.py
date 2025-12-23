@@ -157,10 +157,11 @@ class SpotPerpPaperEngine:
         self._validation_config_provided = validation_settings is not None
         self.taker_fee_spot = taker_fee_spot
         self.taker_fee_perp = taker_fee_perp
+        default_fee_mode = str(getattr(trading, "fee_mode", "maker")).lower()
         self.maker_fee_spot = getattr(trading, "maker_fee_spot", 0.0)
         self.maker_fee_perp = getattr(trading, "maker_fee_perp", 0.0)
-        self.spot_fee_mode = str(getattr(trading, "spot_fee_mode", "maker")).lower()
-        self.perp_fee_mode = str(getattr(trading, "perp_fee_mode", "maker")).lower()
+        self.spot_fee_mode = str(getattr(trading, "spot_fee_mode", default_fee_mode)).lower()
+        self.perp_fee_mode = str(getattr(trading, "perp_fee_mode", default_fee_mode)).lower()
         self.db_session_factory = db_session_factory
         self.feed_health = feed_health_tracker or FeedHealthTracker(feed_health_settings)
         self.client.set_feed_health_tracker(self.feed_health)
@@ -1033,24 +1034,28 @@ class SpotPerpPaperEngine:
             spot_label = "spot_bid"
             perp_label = "perp_ask"
 
-        fee_spot_rate = self._resolve_fee_rate(self.spot_fee_mode, self.maker_fee_spot, self.taker_fee_spot)
-        fee_perp_rate = self._resolve_fee_rate(self.perp_fee_mode, self.maker_fee_perp, self.taker_fee_perp)
+        fee_spot_rate = 0.0 if self.spot_fee_mode == "maker" else self.taker_fee_spot
+        fee_perp_rate = 0.0 if self.perp_fee_mode == "maker" else self.taker_fee_perp
         fee_spot = fee_spot_rate * notional
         fee_perp = fee_perp_rate * notional
         gross_pnl_est = spread_gross * notional
         fee_est = fee_spot + fee_perp
-        safety_buffer_bps = getattr(self.trading, "safety_slippage_buffer", 0.0)
-        slippage_bps = 0.5 * (spot_spread_bps + perp_spread_bps) + safety_buffer_bps
+        buffer_bps = getattr(self.trading, "safety_slippage_buffer", 0.0)
+        base_slip_bps = 0.5 * (spot_spread_bps + perp_spread_bps)
+        slippage_bps = base_slip_bps + buffer_bps
         slippage_est = slippage_bps * notional
         pnl_net = gross_pnl_est - fee_est - slippage_est - funding_estimate
         total_cost_bps = (fee_est + slippage_est) / notional if notional > 0 else 0.0
+        edge_bps = spread_gross * 10000
+        min_edge_threshold = getattr(self.trading, "min_edge_threshold", 0.0)
+        min_edge_bps = min_edge_threshold * 10000
+        effective_threshold = max(min_edge_threshold, total_cost_bps)
+        effective_threshold_bps = effective_threshold * 10000
         qty = notional / spot_px if spot_px > 0 else 0.0
         if os.environ.get("SPOT_PERP_FORCE_PASS") == "1":
             pnl_net = abs(pnl_net) + 1e-6
             logger.info("[SPOT_PERP][TEST] force_pass=1 pnl_net_est_overridden")
-        min_edge_threshold = getattr(self.trading, "min_edge_threshold", 0.0)
-        min_required_edge = max(min_edge_threshold, total_cost_bps)
-        below_min_edge = spread_gross < min_required_edge
+        below_min_edge = spread_gross < effective_threshold
         pnl_nonpos = pnl_net <= 0
         decision = "PASS"
         reject_reason = "OK"
@@ -1089,12 +1094,19 @@ class SpotPerpPaperEngine:
         )
         logger.info(
             (
-                "[SPOT_PERP][FILTER] asset=%s spread_gross=%+.6f gross_pnl_est=%+.6f fee_est=%+.6f "
-                "slippage_est=%+.6f total_cost_bps=%+.6f notional_usd=%.6f qty=%.6f pnl_net_est=%+.6f decision=%s "
-                "reason=%s"
+                "[SPOT_PERP][FILTER] asset=%s spread_gross=%+.6f edge_bps=%.2f min_edge_bps=%.2f "
+                "effective_threshold_bps=%.2f spot_spread_bps=%.2f perp_spread_bps=%.2f buffer_bps=%.2f "
+                "gross_pnl_est=%+.6f fee_est=%+.6f slippage_est=%+.6f total_cost_bps=%+.6f notional_usd=%.6f "
+                "qty=%.6f pnl_net_est=%+.6f decision=%s reason=%s"
             ),
             asset,
             spread_gross,
+            edge_bps,
+            min_edge_bps,
+            effective_threshold_bps,
+            spot_spread_bps * 10000,
+            perp_spread_bps * 10000,
+            buffer_bps * 10000,
             gross_pnl_est,
             fee_est,
             slippage_est,
