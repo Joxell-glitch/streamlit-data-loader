@@ -216,6 +216,7 @@ class SpotPerpPaperEngine:
         }
         self._maker_probe_warned = False
         self._maker_probe_table_ready = False
+        self._maker_probe_counter = 0
         self._ensure_maker_probe_table()
 
     def _init_spot_proxy_maps(self) -> None:
@@ -272,7 +273,9 @@ class SpotPerpPaperEngine:
         perp_bid: float,
         perp_ask: float,
     ) -> None:
-        ts_ms = int(time.time() * 1000)
+        ts_now = time.time()
+        ts_epoch = int(ts_now)
+        ts_ms = int(ts_now * 1000)
         spot_snapshot = {"ts": ts_ms, "bid": spot_bid, "ask": spot_ask}
         perp_snapshot = {"ts": ts_ms, "bid": perp_bid, "ask": perp_ask}
         try:
@@ -282,9 +285,21 @@ class SpotPerpPaperEngine:
             spot_curr, spot_next, _ = self._get_snapshot_pair(asset, "spot", spot_snapshot)
             perp_curr, perp_next, _ = self._get_snapshot_pair(asset, "perp", perp_snapshot)
             with self.db_session_factory() as session:
+                last_probe = (
+                    session.query(MakerProbe)
+                    .filter(MakerProbe.asset == asset)
+                    .order_by(MakerProbe.ts.desc())
+                    .first()
+                )
+                if last_probe:
+                    last_probe.spot_bid_next = spot_bid
+                    last_probe.spot_ask_next = spot_ask
+                    last_probe.perp_bid_next = perp_bid
+                    last_probe.perp_ask_next = perp_ask
+                    last_probe.dt_next_ms = max(0.0, float((ts_epoch - (last_probe.ts or ts_epoch)) * 1000))
                 session.add(
                     MakerProbe(
-                        ts=ts_ms,
+                        ts=ts_epoch,
                         asset=asset,
                         direction=direction,
                         spot_bid=spot_curr.get("bid") if spot_curr else None,
@@ -297,14 +312,43 @@ class SpotPerpPaperEngine:
                         spot_ask_next=spot_next.get("ask") if spot_next else None,
                         perp_bid_next=perp_next.get("bid") if perp_next else None,
                         perp_ask_next=perp_next.get("ask") if perp_next else None,
-                        dt_next_ms=None,
+                        # -1 means we have not yet observed the next relevant event for this probe.
+                        dt_next_ms=-1.0,
                     )
                 )
                 session.commit()
+                self._maker_probe_counter += 1
+                if self._maker_probe_counter % 5 == 0:
+                    self._log_recent_maker_probes(session)
         except Exception:
             if not self._maker_probe_warned:
                 logger.warning("[SPOT_PERP][MAKER_PROBE] persist_failed", exc_info=True)
                 self._maker_probe_warned = True
+
+    def _log_recent_maker_probes(self, session) -> None:
+        rows = (
+            session.query(MakerProbe)
+            .order_by(MakerProbe.id.desc())
+            .limit(5)
+            .all()
+        )
+        if not rows:
+            return
+        rows = list(reversed(rows))
+        formatted = [
+            {
+                "id": row.id,
+                "ts": row.ts,
+                "dt_next_ms": row.dt_next_ms,
+                "asset": row.asset,
+                "direction": row.direction,
+            }
+            for row in rows
+        ]
+        has_null = any(row.ts is None or row.dt_next_ms is None for row in rows)
+        logger.info("[SPOT_PERP][MAKER_PROBE] recent=%s", formatted)
+        if has_null:
+            logger.warning("[SPOT_PERP][MAKER_PROBE] null_values_detected")
 
     async def run_forever(self, stop_event: Optional[asyncio.Event] = None) -> None:
         self._running = True
