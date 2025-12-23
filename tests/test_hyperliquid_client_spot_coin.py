@@ -72,6 +72,34 @@ def test_resolve_spot_ws_coin_prefers_index(monkeypatch: pytest.MonkeyPatch):
     assert client.get_resolved_spot_coin("ETH") == "@142"
 
 
+def test_resolve_spot_ws_coin_falls_back_to_u_prefix_pair(monkeypatch: pytest.MonkeyPatch):
+    client = _make_client()
+
+    async def _fake_meta_fetch(*_: str, **__: str):
+        return {
+            "spotMeta": {
+                "tokens": [
+                    {"index": 0, "name": "USDC"},
+                    {"index": 221, "name": "UETH"},
+                ],
+                "universe": [
+                    {
+                        "tokens": [221, 0],
+                        "index": 151,
+                        "name": "@151",
+                        "isCanonical": False,
+                    }
+                ],
+            }
+        }
+
+    monkeypatch.setattr(client, "fetch_spot_meta_and_asset_ctxs", _fake_meta_fetch)
+
+    resolved = asyncio.run(client._resolve_spot_ws_coin_from_universe("ETH", "ETH/USDC"))
+
+    assert resolved == "@151"
+
+
 def test_resolve_spot_ws_coin_uses_canonical_pair(monkeypatch: pytest.MonkeyPatch):
     client = _make_client()
 

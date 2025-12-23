@@ -1548,6 +1548,19 @@ class HyperliquidClient:
 
     async def _resolve_spot_ws_coin_from_universe(self, asset: str, spot_pair: str) -> Optional[str]:
         pair = (spot_pair or f"{asset}/USDC").upper()
+        asset_upper = asset.upper() if isinstance(asset, str) else asset
+        candidates: List[str] = [pair]
+        base_quote_pair = f"{asset_upper}/USDC" if isinstance(asset_upper, str) else None
+        if base_quote_pair and pair == base_quote_pair:
+            u_prefixed_pair = f"U{asset_upper}/USDC"
+            if u_prefixed_pair not in candidates:
+                candidates.append(u_prefixed_pair)
+        if "/" in pair:
+            base, quote = pair.split("/", 1)
+            if isinstance(asset_upper, str) and base == asset_upper:
+                alt_u_pair = f"U{base}/{quote}"
+                if alt_u_pair not in candidates:
+                    candidates.append(alt_u_pair)
         try:
             meta = await self.fetch_spot_meta_and_asset_ctxs()
         except Exception as exc:
@@ -1581,8 +1594,11 @@ class HyperliquidClient:
                 continue
             token_map[idx] = str(name).upper()
 
-        ws_coin = self.extract_spot_ws_coin_from_universe(universe, pair)
-        if ws_coin is None:
+        ws_coin = None
+        for candidate in candidates:
+            ws_coin = self.extract_spot_ws_coin_from_universe(universe, candidate)
+            if ws_coin is not None:
+                break
             if isinstance(universe, Iterable):
                 for entry in universe:
                     if not isinstance(entry, dict):
@@ -1594,16 +1610,22 @@ class HyperliquidClient:
                     quote = token_map.get(entry_tokens[1])
                     if not base or not quote:
                         continue
-                    if f"{base}/{quote}" != pair:
+                    if f"{base}/{quote}" != candidate:
                         continue
                     try:
                         index_val = int(entry.get("index"))
                     except Exception:
                         continue
-                    ws_coin = f"@{index_val}"
+                    entry_name = entry.get("name")
+                    if isinstance(entry_name, str) and entry_name.startswith("@"):  # noqa: SIM114
+                        ws_coin = entry_name
+                    else:
+                        ws_coin = f"@{index_val}"
                     break
-            if ws_coin is None:
-                return None
+            if ws_coin is not None:
+                break
+        if ws_coin is None:
+            return None
 
         index_val = ws_coin.lstrip("@")
         subscription_coin = asset.split("/")[0] if isinstance(asset, str) else asset
