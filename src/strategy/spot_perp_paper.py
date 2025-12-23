@@ -1054,8 +1054,8 @@ class SpotPerpPaperEngine:
             spot_label = "spot_bid"
             perp_label = "perp_ask"
 
-        fee_spot_rate = 0.0 if self.spot_fee_mode == "maker" else self.taker_fee_spot
-        fee_perp_rate = 0.0 if self.perp_fee_mode == "maker" else self.taker_fee_perp
+        fee_spot_rate = self._resolve_fee_rate(self.spot_fee_mode, self.maker_fee_spot, self.taker_fee_spot)
+        fee_perp_rate = self._resolve_fee_rate(self.perp_fee_mode, self.maker_fee_perp, self.taker_fee_perp)
         fee_spot = fee_spot_rate * notional
         fee_perp = fee_perp_rate * notional
         gross_pnl_est = spread_gross * notional
