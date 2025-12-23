@@ -22,6 +22,7 @@ class TradingSettings:
     min_edge_threshold: float
     safety_slippage_buffer: float
     max_concurrent_triangles: int
+    fee_mode: str = "maker"
     spot_fee_mode: str = "maker"
     perp_fee_mode: str = "maker"
     maker_fee_spot: float = 0.0

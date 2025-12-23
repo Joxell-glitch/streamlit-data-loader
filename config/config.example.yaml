@@ -11,8 +11,9 @@ trading:
   initial_quote_balance: 10000.0
   min_position_size: 50.0
   max_position_size: 500.0
-  min_edge_threshold: 0.001
-  safety_slippage_buffer: 0.0005
+  min_edge_threshold: 0.0003  # Recommend ~0.0002-0.0004 (20-40 bps) for BTC paper testing
+  safety_slippage_buffer: 0.00005  # 0.5 bps default; small additive buffer on top of observed spreads
+  fee_mode: maker
   spot_fee_mode: maker
   perp_fee_mode: maker
   maker_fee_spot: 0.0
