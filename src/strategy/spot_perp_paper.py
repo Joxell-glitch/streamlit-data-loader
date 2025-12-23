@@ -6,7 +6,7 @@ import os
 import time
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from src.config.loader import load_config
 from src.config.models import FeedHealthSettings, Settings, TradingSettings, ValidationSettings
@@ -41,6 +41,21 @@ class BookSnapshot:
 
     def has_liquidity(self) -> bool:
         return self.best_bid > 0 and self.best_ask > 0 and self.best_bid < self.best_ask
+
+
+@dataclass(frozen=True)
+class SpotPerpDecision:
+    asset: str
+    edge_bps: float
+    effective_threshold_bps: float
+    pnl_net_est: float
+    decision: str
+    reason: str
+    fee_mode: str
+    spot_fee_mode: str
+    perp_fee_mode: str
+    fee_spot_rate: float
+    fee_perp_rate: float
 
 
 @dataclass
@@ -149,6 +164,7 @@ class SpotPerpPaperEngine:
         validation_settings: Optional[ValidationSettings] = None,
         would_trade: bool = False,
         trace_every_seconds: int = 10,
+        decision_callback: Optional[Callable[[SpotPerpDecision], None]] = None,
     ) -> None:
         self.client = client
         self.assets = list(assets)
@@ -235,6 +251,7 @@ class SpotPerpPaperEngine:
         self._maker_probe_table_ready = False
         self._maker_probe_counter = 0
         self._ensure_maker_probe_table()
+        self._decision_callback = decision_callback
 
     @staticmethod
     def _resolve_fee_rate(mode: str, maker_rate: float, taker_rate: float) -> float:
@@ -1147,6 +1164,26 @@ class SpotPerpPaperEngine:
             fee_spot_source,
             fee_perp_source,
         )
+
+        if self._decision_callback:
+            try:
+                self._decision_callback(
+                    SpotPerpDecision(
+                        asset=asset,
+                        edge_bps=edge_bps,
+                        effective_threshold_bps=effective_threshold_bps,
+                        pnl_net_est=pnl_net,
+                        decision=decision,
+                        reason=reject_reason,
+                        fee_mode=self.default_fee_mode,
+                        spot_fee_mode=self.spot_fee_mode,
+                        perp_fee_mode=self.perp_fee_mode,
+                        fee_spot_rate=fee_spot_rate,
+                        fee_perp_rate=fee_perp_rate,
+                    )
+                )
+            except Exception:
+                logger.warning("[SPOT_PERP][SCAN] decision_callback_failed asset=%s", asset, exc_info=True)
 
         if spread_gross <= 0 or pnl_net <= 0:
             return

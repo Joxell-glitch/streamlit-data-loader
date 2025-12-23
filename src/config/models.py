@@ -36,6 +36,7 @@ class TradingSettings:
     max_spread_pct: float = 1.0
     top_n_opportunities: int = 20
     max_assets_per_ws: int = 50
+    universe_assets: List[str] = field(default_factory=list)
 
 
 @dataclass

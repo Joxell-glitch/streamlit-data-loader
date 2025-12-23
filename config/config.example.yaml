@@ -23,6 +23,7 @@ trading:
   max_concurrent_triangles: 5
   top_n_opportunities: 20
   max_assets_per_ws: 50
+  universe_assets: []
   whitelist: []
   blacklist: []
   spot_pair_overrides: {}

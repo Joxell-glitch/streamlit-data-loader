@@ -131,11 +131,16 @@ python -m src.cli.run_spot_perp_paper --config config/config.yaml --assets BTC,E
   python -m src.cli.run_spot_perp_paper --config config/config.yaml --assets BTC,ETH,SOL --status-only
   ```
   Useful to verify config + DB path and how many `spot_perp_opportunities` rows are present without opening websockets.
+- Scan multi-asset edge (report + CSV):
+  ```bash
+  python -m src.cli.run_spot_perp_paper --scan --top 30 --fee-mode both --out /tmp/scan.csv
+  ```
 
 ## Configuration
 - `config/config.yaml` holds defaults. Environment variables (from `.env`) override file values.
 - Example keys include network selection, quote asset, edge thresholds, position sizing, whitelists/blacklists, DB backend, and logging settings.
 - For spot/perp paper runs you can remap a logical asset to a different spot pair via `trading.spot_pair_overrides` (e.g., `BTC: "UBTC/USDC"`).
+- For scan mode, populate `trading.universe_assets` (or pass `--assets`) to control the asset list.
 - See `config/config.example.yaml` and `.env.example` for templates.
 
 ## Troubleshooting (Python 3.8)

@@ -106,6 +106,7 @@ def apply_env_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
     raw["trading"].setdefault("maker_fee_perp", 0.0)
     raw["trading"].setdefault("taker_fee_spot", raw["trading"].get("taker_fee_spot", 0.001))
     raw["trading"].setdefault("taker_fee_perp", raw["trading"].get("taker_fee_perp", 0.0005))
+    raw["trading"].setdefault("universe_assets", [])
     raw["trading"]["max_assets_per_ws"] = int(
         env.get("TRADING_MAX_ASSETS_PER_WS", raw["trading"].get("max_assets_per_ws", 50))
     )
