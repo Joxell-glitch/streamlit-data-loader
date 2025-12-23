@@ -158,10 +158,17 @@ class SpotPerpPaperEngine:
         self.taker_fee_spot = taker_fee_spot
         self.taker_fee_perp = taker_fee_perp
         default_fee_mode = str(getattr(trading, "fee_mode", "maker")).lower()
+        self.default_fee_mode = default_fee_mode
         self.maker_fee_spot = getattr(trading, "maker_fee_spot", 0.0)
         self.maker_fee_perp = getattr(trading, "maker_fee_perp", 0.0)
         self.spot_fee_mode = str(getattr(trading, "spot_fee_mode", default_fee_mode)).lower()
         self.perp_fee_mode = str(getattr(trading, "perp_fee_mode", default_fee_mode)).lower()
+        self.effective_fee_spot_rate = (
+            self.maker_fee_spot if self.spot_fee_mode == "maker" else self.taker_fee_spot
+        )
+        self.effective_fee_perp_rate = (
+            self.maker_fee_perp if self.perp_fee_mode == "maker" else self.taker_fee_perp
+        )
         self.db_session_factory = db_session_factory
         self.feed_health = feed_health_tracker or FeedHealthTracker(feed_health_settings)
         self.client.set_feed_health_tracker(self.feed_health)
@@ -402,10 +409,23 @@ class SpotPerpPaperEngine:
             self.trace_every_seconds,
         )
         logger.info(
-            "[SPOT_PERP][INFO] fees fee_spot=%.6f fee_perp=%.6f fee_tier=%s",
+            (
+                "[SPOT_PERP][INFO] fees fee_spot=%.6f fee_perp=%.6f fee_tier=%s "
+                "fee_mode=%s spot_fee_mode=%s perp_fee_mode=%s eff_spot_rate=%.6f eff_perp_rate=%.6f "
+                "maker_fee_spot=%.6f maker_fee_perp=%.6f taker_fee_spot=%.6f taker_fee_perp=%.6f"
+            ),
             self.taker_fee_spot,
             self.taker_fee_perp,
             HL_TIER_LABEL,
+            self.default_fee_mode,
+            self.spot_fee_mode,
+            self.perp_fee_mode,
+            self.effective_fee_spot_rate,
+            self.effective_fee_perp_rate,
+            self.maker_fee_spot,
+            self.maker_fee_perp,
+            self.taker_fee_spot,
+            self.taker_fee_perp,
         )
         await self.client.start_market_data(
             self._spot_subscription_coins,
@@ -1097,7 +1117,8 @@ class SpotPerpPaperEngine:
                 "[SPOT_PERP][FILTER] asset=%s spread_gross=%+.6f edge_bps=%.2f min_edge_bps=%.2f "
                 "effective_threshold_bps=%.2f spot_spread_bps=%.2f perp_spread_bps=%.2f buffer_bps=%.2f "
                 "gross_pnl_est=%+.6f fee_est=%+.6f slippage_est=%+.6f total_cost_bps=%+.6f notional_usd=%.6f "
-                "qty=%.6f pnl_net_est=%+.6f decision=%s reason=%s"
+                "qty=%.6f pnl_net_est=%+.6f decision=%s reason=%s fee_mode=%s spot_fee_mode=%s "
+                "perp_fee_mode=%s fee_spot_rate=%.6f fee_perp_rate=%.6f"
             ),
             asset,
             spread_gross,
@@ -1116,6 +1137,11 @@ class SpotPerpPaperEngine:
             pnl_net,
             decision,
             reject_reason,
+            self.default_fee_mode,
+            self.spot_fee_mode,
+            self.perp_fee_mode,
+            fee_spot_rate,
+            fee_perp_rate,
         )
 
         if spread_gross <= 0 or pnl_net <= 0:
