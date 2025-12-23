@@ -223,6 +223,7 @@ class SpotPerpPaperEngine:
             asset: {"spot": None, "perp": None} for asset in self.assets
         }
         self._maker_probe_warned = False
+        self._maker_probe_skip_logged: Dict[str, bool] = {asset: False for asset in self.assets}
         self._maker_probe_table_ready = False
         self._maker_probe_counter = 0
         self._ensure_maker_probe_table()
@@ -297,22 +298,34 @@ class SpotPerpPaperEngine:
             with self.db_session_factory() as session:
                 last_probe = (
                     session.query(MakerProbe)
-                    .filter(MakerProbe.asset == asset)
+                    .filter(MakerProbe.asset == asset, MakerProbe.dt_next_ms <= -0.5)
                     .order_by(MakerProbe.ts.desc())
                     .first()
                 )
                 if last_probe:
-                    last_probe.spot_bid_next = spot_bid
-                    last_probe.spot_ask_next = spot_ask
-                    last_probe.perp_bid_next = perp_bid
-                    last_probe.perp_ask_next = perp_ask
-                    last_probe.dt_next_ms = max(0.0, float(now_ms() - (last_probe.ts or now_ms())))
-                    logger.info(
-                        "[SPOT_PERP][MAKER_PROBE] update_next id=%s ts=%s dt_next_ms=%.2f",
-                        last_probe.id,
-                        last_probe.ts,
-                        last_probe.dt_next_ms,
-                    )
+                    age_ms = float(now_ms() - (last_probe.ts or now_ms()))
+                    if age_ms > 5000:
+                        if not self._maker_probe_skip_logged.get(asset):
+                            logger.info(
+                                "[SPOT_PERP][MAKER_PROBE] skip_update_next_old id=%s age_ms=%.1f",
+                                last_probe.id,
+                                age_ms,
+                            )
+                            self._maker_probe_skip_logged[asset] = True
+                    else:
+                        last_probe.spot_bid_next = spot_bid
+                        last_probe.spot_ask_next = spot_ask
+                        last_probe.perp_bid_next = perp_bid
+                        last_probe.perp_ask_next = perp_ask
+                        last_probe.dt_next_ms = max(0.0, age_ms)
+                        session.flush()
+                        logger.info(
+                            "[SPOT_PERP][MAKER_PROBE] update_next id=%s ts=%s dt_next_ms=%.2f age_ms=%.1f",
+                            last_probe.id,
+                            last_probe.ts,
+                            last_probe.dt_next_ms,
+                            age_ms,
+                        )
                 new_probe = MakerProbe(
                     ts=ts_ms,
                     asset=asset,
