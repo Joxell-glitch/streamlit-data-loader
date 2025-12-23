@@ -9,3 +9,16 @@ data/
 # local scratch
 logs/
 tools/
+
+# --- TEMP / SHELL ARTIFACTS ---
+PY
+fee=*
+notional=*
+slip=*
+from
+import
+
+# --- CONFIG BACKUPS ---
+*.bak
+*.bak2
+
