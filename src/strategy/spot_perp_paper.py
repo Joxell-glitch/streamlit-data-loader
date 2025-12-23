@@ -11,7 +11,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from src.config.loader import load_config
 from src.config.models import FeedHealthSettings, Settings, TradingSettings, ValidationSettings
 from src.core.logging import get_logger
-from src.db.models import DecisionOutcome, DecisionSnapshot, SpotPerpOpportunity
+from src.db.models import Base, DecisionOutcome, DecisionSnapshot, MakerProbe, SpotPerpOpportunity
 from src.db.session import get_session
 from src.hyperliquid_client.client import HyperliquidClient
 from src.observability.feed_health import FeedHealthTracker
@@ -211,6 +211,12 @@ class SpotPerpPaperEngine:
             }
             for asset in self.assets
         }
+        self._maker_probe_history: Dict[str, Dict[str, Any]] = {
+            asset: {"spot": None, "perp": None} for asset in self.assets
+        }
+        self._maker_probe_warned = False
+        self._maker_probe_table_ready = False
+        self._ensure_maker_probe_table()
 
     def _init_spot_proxy_maps(self) -> None:
         overrides = {key.upper(): value for key, value in (self.trading.spot_pair_overrides or {}).items()}
@@ -230,6 +236,75 @@ class SpotPerpPaperEngine:
             if pair != default_pair:
                 logger.info("[SPOT_PROXY] %s -> %s", asset, pair)
         self._spot_subscription_coins = list(self._spot_symbol_map.keys())
+
+    def _ensure_maker_probe_table(self) -> None:
+        if self._maker_probe_table_ready:
+            return
+        try:
+            with self.db_session_factory() as session:
+                bind = session.get_bind()
+                if bind:
+                    Base.metadata.create_all(bind=bind, tables=[MakerProbe.__table__])
+                    self._maker_probe_table_ready = True
+        except Exception:
+            if not self._maker_probe_warned:
+                logger.warning("[SPOT_PERP][MAKER_PROBE] ensure_table_failed", exc_info=True)
+                self._maker_probe_warned = True
+
+    def _get_snapshot_pair(
+        self, asset: str, kind_curr: str, snapshot: Dict[str, Any]
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], Optional[float]]:
+        history = self._maker_probe_history.setdefault(asset, {"spot": None, "perp": None})
+        history[kind_curr] = snapshot
+        curr = history.get(kind_curr)
+        next_snapshot: Optional[Dict[str, Any]] = None
+        dt_next_ms: Optional[float] = None
+        return curr, next_snapshot, dt_next_ms
+
+    def _record_maker_probe(
+        self,
+        asset: str,
+        direction: str,
+        spot_px: float,
+        perp_px: float,
+        spot_bid: float,
+        spot_ask: float,
+        perp_bid: float,
+        perp_ask: float,
+    ) -> None:
+        ts_ms = int(time.time() * 1000)
+        spot_snapshot = {"ts": ts_ms, "bid": spot_bid, "ask": spot_ask}
+        perp_snapshot = {"ts": ts_ms, "bid": perp_bid, "ask": perp_ask}
+        try:
+            self._ensure_maker_probe_table()
+            if not self._maker_probe_table_ready:
+                return
+            spot_curr, spot_next, _ = self._get_snapshot_pair(asset, "spot", spot_snapshot)
+            perp_curr, perp_next, _ = self._get_snapshot_pair(asset, "perp", perp_snapshot)
+            with self.db_session_factory() as session:
+                session.add(
+                    MakerProbe(
+                        ts=ts_ms,
+                        asset=asset,
+                        direction=direction,
+                        spot_bid=spot_curr.get("bid") if spot_curr else None,
+                        spot_ask=spot_curr.get("ask") if spot_curr else None,
+                        perp_bid=perp_curr.get("bid") if perp_curr else None,
+                        perp_ask=perp_curr.get("ask") if perp_curr else None,
+                        spot_maker_px=spot_px,
+                        perp_maker_px=perp_px,
+                        spot_bid_next=spot_next.get("bid") if spot_next else None,
+                        spot_ask_next=spot_next.get("ask") if spot_next else None,
+                        perp_bid_next=perp_next.get("bid") if perp_next else None,
+                        perp_ask_next=perp_next.get("ask") if perp_next else None,
+                        dt_next_ms=None,
+                    )
+                )
+                session.commit()
+        except Exception:
+            if not self._maker_probe_warned:
+                logger.warning("[SPOT_PERP][MAKER_PROBE] persist_failed", exc_info=True)
+                self._maker_probe_warned = True
 
     async def run_forever(self, stop_event: Optional[asyncio.Event] = None) -> None:
         self._running = True
@@ -906,6 +981,16 @@ class SpotPerpPaperEngine:
             direction=direction,
             expected_edge_bp=spread_gross * 10000 if spread_gross is not None else None,
             note=f"pnl_net_est={pnl_net:.6f}",
+        )
+        self._record_maker_probe(
+            asset=asset,
+            direction=direction,
+            spot_px=spot_px,
+            perp_px=perp_px,
+            spot_bid=spot_bid,
+            spot_ask=spot_ask,
+            perp_bid=perp.best_bid,
+            perp_ask=perp.best_ask,
         )
         logger.info(
             (

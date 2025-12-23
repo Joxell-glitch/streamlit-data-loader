@@ -149,3 +149,22 @@ class DecisionOutcome(Base):
     outcome = Column(String)
     reason = Column(String)
     detail = Column(String, nullable=True)
+
+
+class MakerProbe(Base):
+    __tablename__ = "maker_probes"
+    id = Column(Integer, primary_key=True)
+    ts = Column(Integer, index=True)
+    asset = Column(String, index=True)
+    direction = Column(String)
+    spot_bid = Column(Float)
+    spot_ask = Column(Float)
+    perp_bid = Column(Float)
+    perp_ask = Column(Float)
+    spot_maker_px = Column(Float)
+    perp_maker_px = Column(Float)
+    spot_bid_next = Column(Float, nullable=True)
+    spot_ask_next = Column(Float, nullable=True)
+    perp_bid_next = Column(Float, nullable=True)
+    perp_ask_next = Column(Float, nullable=True)
+    dt_next_ms = Column(Float, nullable=True)
