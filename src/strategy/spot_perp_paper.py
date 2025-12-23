@@ -1056,6 +1056,8 @@ class SpotPerpPaperEngine:
 
         fee_spot_rate = self._resolve_fee_rate(self.spot_fee_mode, self.maker_fee_spot, self.taker_fee_spot)
         fee_perp_rate = self._resolve_fee_rate(self.perp_fee_mode, self.maker_fee_perp, self.taker_fee_perp)
+        fee_spot_source = "config" if self.spot_fee_mode == "maker" else "fallback"
+        fee_perp_source = "config" if self.perp_fee_mode == "maker" else "fallback"
         fee_spot = fee_spot_rate * notional
         fee_perp = fee_perp_rate * notional
         gross_pnl_est = spread_gross * notional
@@ -1112,13 +1114,13 @@ class SpotPerpPaperEngine:
             perp_bid=perp.best_bid,
             perp_ask=perp.best_ask,
         )
-        logger.info(
+        logger.debug(
             (
                 "[SPOT_PERP][FILTER] asset=%s spread_gross=%+.6f edge_bps=%.2f min_edge_bps=%.2f "
                 "effective_threshold_bps=%.2f spot_spread_bps=%.2f perp_spread_bps=%.2f buffer_bps=%.2f "
                 "gross_pnl_est=%+.6f fee_est=%+.6f slippage_est=%+.6f total_cost_bps=%+.6f notional_usd=%.6f "
                 "qty=%.6f pnl_net_est=%+.6f decision=%s reason=%s fee_mode=%s spot_fee_mode=%s "
-                "perp_fee_mode=%s fee_spot_rate=%.6f fee_perp_rate=%.6f"
+                "perp_fee_mode=%s fee_spot_rate=%.6f fee_perp_rate=%.6f fee_spot_source=%s fee_perp_source=%s"
             ),
             asset,
             spread_gross,
@@ -1142,6 +1144,8 @@ class SpotPerpPaperEngine:
             self.perp_fee_mode,
             fee_spot_rate,
             fee_perp_rate,
+            fee_spot_source,
+            fee_perp_source,
         )
 
         if spread_gross <= 0 or pnl_net <= 0:
