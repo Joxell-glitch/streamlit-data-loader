@@ -5,3 +5,7 @@ __pycache__/
 config/config.yaml
 data/
 *.sqlite
+
+# local scratch
+logs/
+tools/

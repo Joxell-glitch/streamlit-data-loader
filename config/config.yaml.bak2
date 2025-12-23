@@ -1,0 +1,37 @@
+network: mainnet
+api:
+  rest_base: "https://api.hyperliquid.xyz"
+  info_path: "/info"
+  websocket_url: "wss://api.hyperliquid.xyz/ws"
+  testnet_rest_base: "https://api.hyperliquid-testnet.xyz"
+  testnet_websocket_url: "wss://api.hyperliquid-testnet.xyz/ws"
+
+trading:
+  spot_pair_overrides:
+    BTC: "UBTC/USDC"
+  quote_asset: "USDC"
+  initial_quote_balance: 10000.0
+  min_position_size: 50.0
+  max_position_size: 500.0
+  min_edge_threshold: 0.001
+  safety_slippage_buffer: 0.0005
+  max_concurrent_triangles: 5
+  whitelist: []
+  blacklist: []
+  min_average_volume: 0
+  max_spread_pct: 0.01
+
+database:
+  backend: sqlite
+  sqlite_path: "data/arb_bot.sqlite"
+  postgres:
+    host: "localhost"
+    port: 5432
+    user: "user"
+    password: "password"
+    database: "hyperliquid"
+
+logging:
+  level: INFO
+  log_file: "data/bot.log"
+  console: true
