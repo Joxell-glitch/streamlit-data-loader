@@ -47,6 +47,10 @@ def test_evaluate_gates_marks_missing_returns_skip():
         mark_price=0.0,
     )
     snapshot = {
+        "spot_bid": 10,
+        "spot_ask": 11,
+        "perp_bid": 9,
+        "perp_ask": 10,
         "spot_incomplete": False,
         "perp_incomplete": False,
         "stale": False,
@@ -61,7 +65,7 @@ def test_evaluate_gates_marks_missing_returns_skip():
     assert details["gates"]["has_mark"] is False
 
 
-def test_evaluate_gates_incomplete_books_returns_skip_incomplete():
+def test_evaluate_gates_incomplete_books_returns_spot_sanity_failed():
     engine = _build_engine()
     state = AssetState(
         spot=BookSnapshot(best_bid=10, best_ask=11),
@@ -69,6 +73,10 @@ def test_evaluate_gates_incomplete_books_returns_skip_incomplete():
         mark_price=100.0,
     )
     snapshot = {
+        "spot_bid": 10,
+        "spot_ask": 11,
+        "perp_bid": 9,
+        "perp_ask": 10,
         "spot_incomplete": True,
         "perp_incomplete": False,
         "stale": False,
@@ -79,7 +87,7 @@ def test_evaluate_gates_incomplete_books_returns_skip_incomplete():
     }
     ready, reason, details = engine._evaluate_gates("BTC", snapshot, state)
     assert ready is False
-    assert reason == "SKIP_INCOMPLETE"
+    assert reason == "spot_sanity_failed"
     assert details["gates"]["not_incomplete"] is False
 
 
@@ -91,6 +99,10 @@ def test_evaluate_gates_all_good_ready():
         mark_price=100.0,
     )
     snapshot = {
+        "spot_bid": 10,
+        "spot_ask": 11,
+        "perp_bid": 9,
+        "perp_ask": 10,
         "spot_incomplete": False,
         "perp_incomplete": False,
         "stale": False,
