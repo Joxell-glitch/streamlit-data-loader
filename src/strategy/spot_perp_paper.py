@@ -1335,15 +1335,43 @@ class SpotPerpPaperEngine:
             decision = "REJECT"
             reject_reason = "PNL_NONPOS"
 
+        slippage_bps = slippage_rate * 10000
         logger.info(
             "[SPOT_PERP][INFO] compute_attempt asset=%s spot_price=%.6f perp_price=%.6f mark=%.6f "
-            "spread_gross=%+.6f pnl_net_est=%+.6f",
+            "spread_gross=%+.6f pnl_net_est=%+.6f notional_usd=%.6f fee_spot_rate=%.6f "
+            "fee_perp_rate=%.6f fee_spot=%+.6f fee_perp=%+.6f fee_est=%+.6f base_slip_bps=%.6f "
+            "buffer_bps=%.6f slippage_bps=%.6f slippage_est=%+.6f funding_rate=%+.6f "
+            "funding_estimate=%+.6f total_cost_bps=%.6f min_edge_threshold=%.6f min_edge_bps=%.6f "
+            "effective_threshold=%.6f below_min_edge=%s fee_mode=%s spot_fee_mode=%s perp_fee_mode=%s "
+            "fee_spot_source=%s fee_perp_source=%s",
             asset,
             spot_px,
             perp_px,
             state.mark_price,
             spread_gross,
             pnl_net,
+            notional,
+            fee_spot_rate,
+            fee_perp_rate,
+            fee_spot,
+            fee_perp,
+            fee_est,
+            base_slip_bps,
+            buffer_bps,
+            slippage_bps,
+            slippage_est,
+            state.funding_rate,
+            funding_estimate,
+            total_cost_bps * 10000,
+            min_edge_threshold,
+            min_edge_bps,
+            effective_threshold,
+            below_min_edge,
+            self.default_fee_mode,
+            self.spot_fee_mode,
+            self.perp_fee_mode,
+            fee_spot_source,
+            fee_perp_source,
         )
         self._log_would_trade(
             asset,
