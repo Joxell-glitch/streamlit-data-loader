@@ -20,15 +20,15 @@ class DummyClient:
 def test_select_auto_assets_prefers_high_spread_then_low_volume():
     spot_meta = {
         "universe": [
-            {"tokens": [1, 2]},
-            {"tokens": [3, 2]},
-            {"tokens": [4, 2]},
+            {"tokens": [1, 2], "index": 10, "name": "AAA/USDC"},
+            {"tokens": [3, 2], "index": 11, "name": "BBB/USDC"},
+            {"tokens": [4, 2], "index": 12, "name": "CCC/USDC"},
         ],
         "tokens": [
             {"index": 1, "name": "AAA"},
             {"index": 3, "name": "BBB"},
             {"index": 4, "name": "CCC"},
-            {"index": 2, "name": "USD"},
+            {"index": 2, "name": "USDC"},
         ],
         "assetCtxs": [
             {"coin": "AAA", "bidPx": "99", "askPx": "101", "dayNtlVlm": "500"},
@@ -46,7 +46,11 @@ def test_select_auto_assets_prefers_high_spread_then_low_volume():
 
 def test_select_auto_assets_filters_to_spot_and_perp_and_adds_major():
     spot_meta = {
-        "universe": [{"name": "AAA"}, {"name": "ETH"}, {"name": "SPOTONLY"}],
+        "universe": [
+            {"name": "AAA/USDC", "index": 1},
+            {"name": "ETH/USDC", "index": 2},
+            {"name": "SPOTONLY/USDC", "index": 3},
+        ],
         "assetCtxs": [
             {"coin": "AAA", "dayNtlVlm": "500"},
             {"coin": "ETH", "dayNtlVlm": "2000"},
@@ -63,7 +67,10 @@ def test_select_auto_assets_filters_to_spot_and_perp_and_adds_major():
 
 def test_select_auto_assets_falls_back_to_volume_when_spread_missing():
     spot_meta = {
-        "universe": [{"name": "AAA"}, {"name": "BBB"}],
+        "universe": [
+            {"name": "AAA/USDC", "index": 1},
+            {"name": "BBB/USDC", "index": 2},
+        ],
         "assetCtxs": [
             {"coin": "AAA", "dayNtlVlm": "1000"},
             {"coin": "BBB", "dayNtlVlm": "10"},
@@ -75,6 +82,31 @@ def test_select_auto_assets_falls_back_to_volume_when_spread_missing():
 
     assert selected == ["BBB"]
     assert reason == "volume_asc"
+
+
+def test_select_auto_assets_excludes_missing_spot_usdc():
+    spot_meta = {
+        "universe": [
+            {"tokens": [1, 2], "index": 10, "name": "AAA/USDT"},
+            {"tokens": [3, 4], "index": 11, "name": "BBB/USDC"},
+        ],
+        "tokens": [
+            {"index": 1, "name": "AAA"},
+            {"index": 2, "name": "USDT"},
+            {"index": 3, "name": "BBB"},
+            {"index": 4, "name": "USDC"},
+        ],
+        "assetCtxs": [
+            {"coin": "AAA", "dayNtlVlm": "100"},
+            {"coin": "BBB", "dayNtlVlm": "10"},
+        ],
+    }
+    perp_meta = {"universe": [{"name": "AAA"}, {"name": "BBB"}]}
+
+    selected, _reason = select_auto_assets_from_meta(spot_meta, perp_meta, limit=2, major_asset="ETH")
+
+    assert "AAA" not in selected
+    assert selected == ["BBB"]
 
 
 def test_auto_assets_warmup_drops_spread_failures():

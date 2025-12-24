@@ -64,6 +64,40 @@ def _spot_base_symbols(spot_meta: Dict[str, Any]) -> set[str]:
     return bases
 
 
+def is_spot_usdc_available(coin: str, spot_meta: Dict[str, Any]) -> bool:
+    universe, tokens = _spot_universe_and_tokens(spot_meta)
+    token_map = {
+        token.get("index"): str(token.get("name")).upper()
+        for token in tokens
+        if token.get("index") is not None and token.get("name")
+    }
+    target = str(coin).upper()
+    candidates = {f"{target}/USDC", f"U{target}/USDC"}
+
+    for entry in universe:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            int(entry.get("index"))
+        except Exception:
+            continue
+        name = entry.get("name")
+        if isinstance(name, str) and name.upper() in candidates:
+            return True
+        entry_tokens = entry.get("tokens")
+        if not isinstance(entry_tokens, list) or len(entry_tokens) != 2:
+            continue
+        base = token_map.get(entry_tokens[0])
+        quote = token_map.get(entry_tokens[1])
+        if not base or not quote:
+            continue
+        if quote.upper() != "USDC":
+            continue
+        if base.upper() in {target, f"U{target}"}:
+            return True
+    return False
+
+
 def _perp_base_symbols(perp_meta: Dict[str, Any]) -> set[str]:
     bases: set[str] = set()
     for entry in perp_meta.get("universe", []) or []:
@@ -127,7 +161,18 @@ def select_auto_assets_from_meta(
 
     spot_bases = _spot_base_symbols(spot_meta)
     perp_bases = _perp_base_symbols(perp_meta)
-    candidates = sorted(spot_bases & perp_bases)
+    all_symbols = sorted(spot_bases | perp_bases)
+    candidates: List[str] = []
+    for symbol in all_symbols:
+        has_perp = symbol in perp_bases
+        has_spot_usdc = is_spot_usdc_available(symbol, spot_meta)
+        if not has_perp:
+            logger.info("[AUTO_ASSETS][FILTER] drop=%s reason=missing_perp", symbol)
+            continue
+        if not has_spot_usdc:
+            logger.info("[AUTO_ASSETS][FILTER] drop=%s reason=missing_spot_usdc", symbol)
+            continue
+        candidates.append(symbol)
 
     ctxs = _asset_contexts(spot_meta)
     ranked: List[AutoAssetCandidate] = []
