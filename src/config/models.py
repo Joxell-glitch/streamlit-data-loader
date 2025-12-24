@@ -88,6 +88,24 @@ class StrategySettings:
 
 
 @dataclass
+class SpotPerpScannerSettings:
+    interval_seconds: int = 10
+    window_minutes: int = 30
+    top_n: int = 10
+    min_cycles_confirm: int = 3
+    removal_cooldown_minutes: int = 10
+    weights: Dict[str, float] = field(
+        default_factory=lambda: {
+            "count_hits": 1.0,
+            "avg_edge_bps": 1.0,
+            "p90_edge_bps": 1.0,
+            "instability_penalty": 1.0,
+        }
+    )
+    refresh_universe_minutes: int = 15
+
+
+@dataclass
 class Settings:
     network: str
     api: APISettings
@@ -97,3 +115,4 @@ class Settings:
     observability: ObservabilitySettings
     strategy: StrategySettings = field(default_factory=StrategySettings)
     validation: ValidationSettings = field(default_factory=ValidationSettings)
+    scanner: SpotPerpScannerSettings = field(default_factory=SpotPerpScannerSettings)

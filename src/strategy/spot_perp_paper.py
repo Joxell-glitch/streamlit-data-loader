@@ -57,6 +57,46 @@ class AssetState:
         return self.spot.has_liquidity() and self.perp.has_liquidity() and self.mark_price > 0
 
 
+@dataclass
+class SpotPerpEdgeSnapshot:
+    asset: str
+    spot_bid: float
+    spot_ask: float
+    perp_bid: float
+    perp_ask: float
+    spot_price: float
+    perp_price: float
+    spread_gross: float
+    pnl_net_est: float
+    edge_bps: float
+    below_min_edge: bool
+    direction: str
+    notional_usd: float
+    fee_spot_rate: float
+    fee_perp_rate: float
+    fee_spot: float
+    fee_perp: float
+    fee_est: float
+    base_slip_bps: float
+    buffer_bps: float
+    slippage_bps: float
+    slippage_est: float
+    base_slip_rate: float
+    buffer_rate: float
+    slippage_rate: float
+    funding_rate: float
+    funding_estimate: float
+    total_cost_bps: float
+    min_edge_threshold: float
+    min_edge_rate: float
+    min_edge_bps: float
+    effective_threshold: float
+    effective_threshold_bps: float
+    spot_spread_bps: float
+    perp_spread_bps: float
+    qty: float
+
+
 class ValidationRecorder:
     def __init__(self, session_factory, settings: ValidationSettings) -> None:
         self.session_factory = session_factory
@@ -153,6 +193,7 @@ class SpotPerpPaperEngine:
         auto_assets_warmup_seconds: float = 3.0,
         auto_assets_warmup_interval: float = 0.25,
         auto_assets_warmup_failure_threshold: int = 3,
+        evaluate_on_update: bool = True,
     ) -> None:
         self.client = client
         self.assets = list(assets)
@@ -226,6 +267,7 @@ class SpotPerpPaperEngine:
         self.auto_assets_warmup_seconds = float(auto_assets_warmup_seconds)
         self.auto_assets_warmup_interval = float(auto_assets_warmup_interval)
         self.auto_assets_warmup_failure_threshold = int(auto_assets_warmup_failure_threshold)
+        self.evaluate_on_update = bool(evaluate_on_update)
         self._trace_state: Dict[str, Dict[str, Any]] = {
             asset: {
                 "last_log": 0.0,
@@ -279,6 +321,48 @@ class SpotPerpPaperEngine:
             if pair != default_pair:
                 logger.info("[SPOT_PROXY] %s -> %s", asset, pair)
         self._spot_subscription_coins = list(self._spot_symbol_map.keys())
+
+    def add_assets(self, assets: Iterable[str]) -> List[str]:
+        new_assets = []
+        for asset in assets:
+            asset = asset.upper()
+            if asset in self.asset_state:
+                continue
+            new_assets.append(asset)
+            self.asset_state[asset] = AssetState()
+            self.assets.append(asset)
+            self.update_counts[asset] = {"spot": 0, "perp": 0, "mark": 0}
+            self._last_update_log[asset] = {
+                "spot": 0.0,
+                "perp": 0.0,
+                "mark": 0.0,
+                "skip": 0.0,
+                "ready": 0.0,
+                "state": 0.0,
+            }
+            self._last_skip_reason[asset] = ""
+            self._last_spot_diag_log[asset] = 0.0
+            self._trace_state[asset] = {
+                "last_log": 0.0,
+                "last_ready": False,
+                "last_reason": "INIT",
+                "trace_emitted": 0,
+                "ready_transitions": 0,
+            }
+            self._maker_probe_history[asset] = {"spot": None, "perp": None}
+            self._maker_probe_skip_logged[asset] = False
+        if new_assets:
+            self._init_spot_proxy_maps()
+        return new_assets
+
+    async def start_market_data(self) -> None:
+        await self.client.start_market_data(
+            self._spot_subscription_coins,
+            self.assets,
+            self.assets,
+            spot_symbol_map=self._spot_symbol_map,
+            spot_pair_overrides=self._spot_pair_overrides,
+        )
 
     def _drop_auto_asset(self, asset: str, reason: str, sanity_failures: int) -> None:
         if asset not in self.asset_state:
@@ -614,13 +698,7 @@ class SpotPerpPaperEngine:
             self.taker_fee_spot,
             self.taker_fee_perp,
         )
-        await self.client.start_market_data(
-            self._spot_subscription_coins,
-            self.assets,
-            self.assets,
-            spot_symbol_map=self._spot_symbol_map,
-            spot_pair_overrides=self._spot_pair_overrides,
-        )
+        await self.start_market_data()
         if self.auto_assets_enabled:
             preflight_assets = await self._preflight_filter_assets_for_spot_book(
                 self.assets,
@@ -771,7 +849,8 @@ class SpotPerpPaperEngine:
                     criteria_text,
                 )
                 self._last_spot_diag_log[coin] = time.time()
-        self._evaluate_and_record(coin)
+        if self.evaluate_on_update:
+            self._evaluate_and_record(coin)
 
     def _on_mark(self, coin: str, mark: float, raw_payload: Dict[str, Any]) -> None:
         if coin not in self.asset_state:
@@ -1254,16 +1333,7 @@ class SpotPerpPaperEngine:
                 state.mark_price > 0,
             )
 
-    def _evaluate_and_record(self, asset: str) -> None:
-        state = self.asset_state[asset]
-        snapshot = self.feed_health.build_asset_snapshot(asset)
-        ready, reason, details = self._evaluate_gates(asset, snapshot, state)
-        # Decision trace keeps gating visibility deterministic for each asset.
-        self._log_decision_trace(asset, ready, reason, details)
-        if reason:
-            self._log_strategy_skip(asset, reason, snapshot)
-            return
-
+    def _build_edge_snapshot(self, asset: str, state: AssetState) -> SpotPerpEdgeSnapshot:
         spot_bid, spot_ask = self._effective_spot_prices(state)
         perp = state.perp
         notional = max(self.trading.min_position_size, 1.0)
@@ -1288,20 +1358,14 @@ class SpotPerpPaperEngine:
             direction = "spot_long"
             spot_px = spot_ask
             perp_px = perp.best_bid
-            spot_label = "spot_ask"
-            perp_label = "perp_bid"
         else:
             spread_gross = spread_short
             direction = "spot_short"
             spot_px = spot_bid
             perp_px = perp.best_ask
-            spot_label = "spot_bid"
-            perp_label = "perp_ask"
 
         fee_spot_rate = self._resolve_fee_rate(self.spot_fee_mode, self.maker_fee_spot, self.taker_fee_spot)
         fee_perp_rate = self._resolve_fee_rate(self.perp_fee_mode, self.maker_fee_perp, self.taker_fee_perp)
-        fee_spot_source = "config" if self.spot_fee_mode == "maker" else "fallback"
-        fee_perp_source = "config" if self.perp_fee_mode == "maker" else "fallback"
         fee_spot = fee_spot_rate * notional
         fee_perp = fee_perp_rate * notional
         gross_pnl_est = spread_gross * notional
@@ -1325,17 +1389,81 @@ class SpotPerpPaperEngine:
             pnl_net = abs(pnl_net) + 1e-6
             logger.info("[SPOT_PERP][TEST] force_pass=1 pnl_net_est_overridden")
         below_min_edge = spread_gross < effective_threshold
-        pnl_nonpos = pnl_net <= 0
+
+        return SpotPerpEdgeSnapshot(
+            asset=asset,
+            spot_bid=spot_bid,
+            spot_ask=spot_ask,
+            perp_bid=perp.best_bid,
+            perp_ask=perp.best_ask,
+            spot_price=spot_px,
+            perp_price=perp_px,
+            spread_gross=spread_gross,
+            pnl_net_est=pnl_net,
+            edge_bps=edge_bps,
+            below_min_edge=below_min_edge,
+            direction=direction,
+            notional_usd=notional,
+            fee_spot_rate=fee_spot_rate,
+            fee_perp_rate=fee_perp_rate,
+            fee_spot=fee_spot,
+            fee_perp=fee_perp,
+            fee_est=fee_est,
+            base_slip_bps=base_slip_bps,
+            buffer_bps=buffer_bps,
+            slippage_bps=slippage_rate * 10000,
+            slippage_est=slippage_est,
+            base_slip_rate=base_slip_rate,
+            buffer_rate=buffer_rate,
+            slippage_rate=slippage_rate,
+            funding_rate=state.funding_rate,
+            funding_estimate=funding_estimate,
+            total_cost_bps=total_cost_bps,
+            min_edge_threshold=min_edge_threshold,
+            min_edge_rate=min_edge_rate,
+            min_edge_bps=min_edge_bps,
+            effective_threshold=effective_threshold,
+            effective_threshold_bps=effective_threshold_bps,
+            spot_spread_bps=spot_spread_bps,
+            perp_spread_bps=perp_spread_bps,
+            qty=qty,
+        )
+
+    def compute_edge_snapshot(self, asset: str) -> Optional[SpotPerpEdgeSnapshot]:
+        if asset not in self.asset_state:
+            return None
+        state = self.asset_state[asset]
+        snapshot = self.feed_health.build_asset_snapshot(asset)
+        ready, reason, _ = self._evaluate_gates(asset, snapshot, state)
+        if not ready or reason:
+            return None
+        return self._build_edge_snapshot(asset, state)
+
+    def _evaluate_and_record(self, asset: str) -> None:
+        state = self.asset_state[asset]
+        snapshot = self.feed_health.build_asset_snapshot(asset)
+        ready, reason, details = self._evaluate_gates(asset, snapshot, state)
+        # Decision trace keeps gating visibility deterministic for each asset.
+        self._log_decision_trace(asset, ready, reason, details)
+        if reason:
+            self._log_strategy_skip(asset, reason, snapshot)
+            return
+
+        edge_snapshot = self._build_edge_snapshot(asset, state)
+        spot_label = "spot_ask" if edge_snapshot.direction == "spot_long" else "spot_bid"
+        perp_label = "perp_bid" if edge_snapshot.direction == "spot_long" else "perp_ask"
+        fee_spot_source = "config" if self.spot_fee_mode == "maker" else "fallback"
+        fee_perp_source = "config" if self.perp_fee_mode == "maker" else "fallback"
+        pnl_nonpos = edge_snapshot.pnl_net_est <= 0
         decision = "PASS"
         reject_reason = "OK"
-        if below_min_edge:
+        if edge_snapshot.below_min_edge:
             decision = "REJECT"
             reject_reason = "BELOW_MIN_EDGE"
         elif pnl_nonpos:
             decision = "REJECT"
             reject_reason = "PNL_NONPOS"
 
-        slippage_bps = slippage_rate * 10000
         logger.info(
             "[SPOT_PERP][INFO] compute_attempt asset=%s spot_price=%.6f perp_price=%.6f mark=%.6f "
             "spread_gross=%+.6f pnl_net_est=%+.6f notional_usd=%.6f fee_spot_rate=%.6f "
@@ -1345,28 +1473,28 @@ class SpotPerpPaperEngine:
             "effective_threshold=%.6f below_min_edge=%s fee_mode=%s spot_fee_mode=%s perp_fee_mode=%s "
             "fee_spot_source=%s fee_perp_source=%s",
             asset,
-            spot_px,
-            perp_px,
+            edge_snapshot.spot_price,
+            edge_snapshot.perp_price,
             state.mark_price,
-            spread_gross,
-            pnl_net,
-            notional,
-            fee_spot_rate,
-            fee_perp_rate,
-            fee_spot,
-            fee_perp,
-            fee_est,
-            base_slip_bps,
-            buffer_bps,
-            slippage_bps,
-            slippage_est,
-            state.funding_rate,
-            funding_estimate,
-            total_cost_bps * 10000,
-            min_edge_threshold,
-            min_edge_bps,
-            effective_threshold,
-            below_min_edge,
+            edge_snapshot.spread_gross,
+            edge_snapshot.pnl_net_est,
+            edge_snapshot.notional_usd,
+            edge_snapshot.fee_spot_rate,
+            edge_snapshot.fee_perp_rate,
+            edge_snapshot.fee_spot,
+            edge_snapshot.fee_perp,
+            edge_snapshot.fee_est,
+            edge_snapshot.base_slip_bps,
+            edge_snapshot.buffer_bps,
+            edge_snapshot.slippage_bps,
+            edge_snapshot.slippage_est,
+            edge_snapshot.funding_rate,
+            edge_snapshot.funding_estimate,
+            edge_snapshot.total_cost_bps * 10000,
+            edge_snapshot.min_edge_threshold,
+            edge_snapshot.min_edge_bps,
+            edge_snapshot.effective_threshold,
+            edge_snapshot.below_min_edge,
             self.default_fee_mode,
             self.spot_fee_mode,
             self.perp_fee_mode,
@@ -1375,19 +1503,19 @@ class SpotPerpPaperEngine:
         )
         self._log_would_trade(
             asset,
-            direction=direction,
-            expected_edge_bp=spread_gross * 10000 if spread_gross is not None else None,
-            note=f"pnl_net_est={pnl_net:.6f}",
+            direction=edge_snapshot.direction,
+            expected_edge_bp=edge_snapshot.spread_gross * 10000 if edge_snapshot.spread_gross is not None else None,
+            note=f"pnl_net_est={edge_snapshot.pnl_net_est:.6f}",
         )
         self._record_maker_probe(
             asset=asset,
-            direction=direction,
-            spot_px=spot_px,
-            perp_px=perp_px,
-            spot_bid=spot_bid,
-            spot_ask=spot_ask,
-            perp_bid=perp.best_bid,
-            perp_ask=perp.best_ask,
+            direction=edge_snapshot.direction,
+            spot_px=edge_snapshot.spot_price,
+            perp_px=edge_snapshot.perp_price,
+            spot_bid=edge_snapshot.spot_bid,
+            spot_ask=edge_snapshot.spot_ask,
+            perp_bid=edge_snapshot.perp_bid,
+            perp_ask=edge_snapshot.perp_ask,
         )
         logger.debug(
             (
@@ -1400,65 +1528,65 @@ class SpotPerpPaperEngine:
                 "fee_spot_rate=%.6f fee_perp_rate=%.6f fee_spot_source=%s fee_perp_source=%s"
             ),
             asset,
-            spread_gross,
-            edge_bps,
-            min_edge_bps,
-            effective_threshold_bps,
-            spot_spread_bps * 10000,
-            perp_spread_bps * 10000,
-            buffer_bps * 10000,
-            base_slip_bps,
-            buffer_bps,
-            base_slip_rate,
-            buffer_rate,
-            slippage_rate,
-            min_edge_threshold,
-            min_edge_rate,
-            gross_pnl_est,
-            fee_est,
-            slippage_est,
-            total_cost_bps * 10000,
-            notional,
-            qty,
-            pnl_net,
+            edge_snapshot.spread_gross,
+            edge_snapshot.edge_bps,
+            edge_snapshot.min_edge_bps,
+            edge_snapshot.effective_threshold_bps,
+            edge_snapshot.spot_spread_bps * 10000,
+            edge_snapshot.perp_spread_bps * 10000,
+            edge_snapshot.buffer_bps * 10000,
+            edge_snapshot.base_slip_bps,
+            edge_snapshot.buffer_bps,
+            edge_snapshot.base_slip_rate,
+            edge_snapshot.buffer_rate,
+            edge_snapshot.slippage_rate,
+            edge_snapshot.min_edge_threshold,
+            edge_snapshot.min_edge_rate,
+            edge_snapshot.spread_gross * edge_snapshot.notional_usd,
+            edge_snapshot.fee_est,
+            edge_snapshot.slippage_est,
+            edge_snapshot.total_cost_bps * 10000,
+            edge_snapshot.notional_usd,
+            edge_snapshot.qty,
+            edge_snapshot.pnl_net_est,
             decision,
             reject_reason,
             self.default_fee_mode,
             self.spot_fee_mode,
             self.perp_fee_mode,
-            fee_spot_rate,
-            fee_perp_rate,
+            edge_snapshot.fee_spot_rate,
+            edge_snapshot.fee_perp_rate,
             fee_spot_source,
             fee_perp_source,
         )
 
-        if spread_gross <= 0 or pnl_net <= 0:
+        if edge_snapshot.spread_gross <= 0 or edge_snapshot.pnl_net_est <= 0:
             return
 
-        fee_total = fee_spot + fee_perp
+        fee_total = edge_snapshot.fee_spot + edge_snapshot.fee_perp
         self._log_opportunity(
             asset=asset,
-            direction=direction,
-            spot_price=spot_px,
-            perp_price=perp_px,
+            direction=edge_snapshot.direction,
+            spot_price=edge_snapshot.spot_price,
+            perp_price=edge_snapshot.perp_price,
             mark_price=state.mark_price,
             spot_label=spot_label,
             perp_label=perp_label,
-            spread_gross=spread_gross,
+            spread_gross=edge_snapshot.spread_gross,
             fee_total=fee_total,
-            funding_estimate=funding_estimate,
-            pnl_net_estimated=pnl_net,
+            funding_estimate=edge_snapshot.funding_estimate,
+            pnl_net_estimated=edge_snapshot.pnl_net_est,
         )
         self._persist_opportunity(
             asset=asset,
-            direction=direction,
-            spot_price=spot_px,
-            perp_price=perp_px,
+            direction=edge_snapshot.direction,
+            spot_price=edge_snapshot.spot_price,
+            perp_price=edge_snapshot.perp_price,
             mark_price=state.mark_price,
-            spread_gross=spread_gross,
+            spread_gross=edge_snapshot.spread_gross,
             fee_estimated=fee_total,
-            funding_estimated=funding_estimate,
-            pnl_net_estimated=pnl_net,
+            funding_estimated=edge_snapshot.funding_estimate,
+            pnl_net_estimated=edge_snapshot.pnl_net_est,
         )
 
     def _log_opportunity(

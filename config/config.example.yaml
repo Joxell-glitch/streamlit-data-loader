@@ -64,3 +64,16 @@ validation:
 strategy:
   would_trade: false
   trace_every_seconds: 10
+
+scanner:
+  interval_seconds: 10
+  window_minutes: 30
+  top_n: 10
+  min_cycles_confirm: 3
+  removal_cooldown_minutes: 10
+  refresh_universe_minutes: 15
+  weights:
+    count_hits: 1.0
+    avg_edge_bps: 1.0
+    p90_edge_bps: 1.0
+    instability_penalty: 1.0

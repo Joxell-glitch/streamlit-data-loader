@@ -12,6 +12,7 @@ from .models import (
     FeedHealthSettings,
     LoggingSettings,
     ObservabilitySettings,
+    SpotPerpScannerSettings,
     Settings,
     StrategySettings,
     TradingSettings,
@@ -81,6 +82,24 @@ def load_config(config_path: str) -> Settings:
         trace_every_seconds=int(strategy_raw.get("trace_every_seconds", 10)),
     )
 
+    scanner_raw = raw.get("scanner", {}) or {}
+    weights_raw = scanner_raw.get("weights", {}) or {}
+    weights = {
+        "count_hits": float(weights_raw.get("count_hits", 1.0)),
+        "avg_edge_bps": float(weights_raw.get("avg_edge_bps", 1.0)),
+        "p90_edge_bps": float(weights_raw.get("p90_edge_bps", 1.0)),
+        "instability_penalty": float(weights_raw.get("instability_penalty", 1.0)),
+    }
+    scanner = SpotPerpScannerSettings(
+        interval_seconds=int(scanner_raw.get("interval_seconds", 10)),
+        window_minutes=int(scanner_raw.get("window_minutes", 30)),
+        top_n=int(scanner_raw.get("top_n", 10)),
+        min_cycles_confirm=int(scanner_raw.get("min_cycles_confirm", 3)),
+        removal_cooldown_minutes=int(scanner_raw.get("removal_cooldown_minutes", 10)),
+        weights=weights,
+        refresh_universe_minutes=int(scanner_raw.get("refresh_universe_minutes", 15)),
+    )
+
     return Settings(
         network=raw["network"],
         api=api,
@@ -90,6 +109,7 @@ def load_config(config_path: str) -> Settings:
         observability=observability,
         strategy=strategy,
         validation=validation,
+        scanner=scanner,
     )
 
 
@@ -170,6 +190,32 @@ def apply_env_overrides(raw: Dict[str, Any]) -> Dict[str, Any]:
     raw["strategy"]["would_trade"] = env.get("STRATEGY_WOULD_TRADE", raw["strategy"].get("would_trade", False))
     raw["strategy"]["trace_every_seconds"] = int(
         env.get("STRATEGY_TRACE_EVERY_SECONDS", raw["strategy"].get("trace_every_seconds", 10))
+    )
+
+    raw.setdefault("scanner", {})
+    raw["scanner"]["interval_seconds"] = int(
+        env.get("SCANNER_INTERVAL_SECONDS", raw["scanner"].get("interval_seconds", 10))
+    )
+    raw["scanner"]["window_minutes"] = int(
+        env.get("SCANNER_WINDOW_MINUTES", raw["scanner"].get("window_minutes", 30))
+    )
+    raw["scanner"]["top_n"] = int(env.get("SCANNER_TOP_N", raw["scanner"].get("top_n", 10)))
+    raw["scanner"]["min_cycles_confirm"] = int(
+        env.get("SCANNER_MIN_CYCLES_CONFIRM", raw["scanner"].get("min_cycles_confirm", 3))
+    )
+    raw["scanner"]["removal_cooldown_minutes"] = int(
+        env.get("SCANNER_REMOVAL_COOLDOWN_MINUTES", raw["scanner"].get("removal_cooldown_minutes", 10))
+    )
+    raw["scanner"]["refresh_universe_minutes"] = int(
+        env.get("SCANNER_REFRESH_UNIVERSE_MINUTES", raw["scanner"].get("refresh_universe_minutes", 15))
+    )
+    raw["scanner"].setdefault("weights", {})
+    weights = raw["scanner"]["weights"]
+    weights["count_hits"] = float(env.get("SCANNER_WEIGHT_COUNT_HITS", weights.get("count_hits", 1.0)))
+    weights["avg_edge_bps"] = float(env.get("SCANNER_WEIGHT_AVG_EDGE_BPS", weights.get("avg_edge_bps", 1.0)))
+    weights["p90_edge_bps"] = float(env.get("SCANNER_WEIGHT_P90_EDGE_BPS", weights.get("p90_edge_bps", 1.0)))
+    weights["instability_penalty"] = float(
+        env.get("SCANNER_WEIGHT_INSTABILITY_PENALTY", weights.get("instability_penalty", 1.0))
     )
 
     return raw
