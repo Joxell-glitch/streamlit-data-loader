@@ -367,7 +367,7 @@ class SpotPerpPaperEngine:
         deadline = start_time + max(0.0, float(timeout_s))
         pending = set(asset_list)
         passed: set[str] = set()
-        last_snapshot: Dict[str, Dict[str, Any]] = {}
+        last_spot_prices: Dict[str, Tuple[Optional[float], Optional[float]]] = {}
         getter = get_snapshot or (
             lambda asset: (self.feed_health.build_asset_snapshot(asset), self.asset_state.get(asset))
         )
@@ -379,18 +379,22 @@ class SpotPerpPaperEngine:
         )
         while pending and time.time() < deadline:
             for asset in list(pending):
-                snapshot, state = getter(asset)
-                last_snapshot[asset] = snapshot or {}
+                _snapshot, state = getter(asset)
                 if not state:
                     continue
                 spot_bid = state.spot.best_bid
                 spot_ask = state.spot.best_ask
-                if spot_bid > 0 and spot_ask > 0:
+                last_spot_prices[asset] = (spot_bid, spot_ask)
+                if spot_bid and spot_ask and spot_bid > 0 and spot_ask > spot_bid:
+                    spread = spot_ask - spot_bid
+                    mid = 0.5 * (spot_ask + spot_bid)
                     logger.info(
-                        "[SPOT_PERP][AUTO_ASSETS][PREFLIGHT] pass asset=%s bid=%.6f ask=%.6f",
+                        "[SPOT_PERP][AUTO_ASSETS][PREFLIGHT] pass asset=%s bid=%.6f ask=%.6f spread=%.6f mid=%.6f",
                         asset,
                         spot_bid,
                         spot_ask,
+                        spread,
+                        mid,
                     )
                     passed.add(asset)
                     pending.remove(asset)
@@ -399,14 +403,25 @@ class SpotPerpPaperEngine:
         waited_s = max(0.0, time.time() - start_time)
         dropped: List[str] = []
         for asset in list(pending):
-            snapshot = last_snapshot.get(asset) or {}
-            spot_not_ready = bool(snapshot.get("spot_never_received") or snapshot.get("spot_incomplete"))
-            reason = "spot_book_not_ready" if spot_not_ready else "spot_book_empty"
+            last_bid, last_ask = last_spot_prices.get(asset, (None, None))
+            if (
+                last_bid is None
+                or last_ask is None
+                or last_bid <= 0
+                or last_ask <= 0
+            ):
+                reason = "spot_book_empty"
+            else:
+                reason = "spot_book_zero_or_crossed"
+            bid_log = f"{last_bid:.6f}" if last_bid is not None else "n/a"
+            ask_log = f"{last_ask:.6f}" if last_ask is not None else "n/a"
             logger.info(
-                "[SPOT_PERP][AUTO_ASSETS][PREFLIGHT] drop asset=%s reason=%s waited_s=%.2f",
+                "[SPOT_PERP][AUTO_ASSETS][PREFLIGHT] drop asset=%s reason=%s waited_s=%.2f bid=%s ask=%s",
                 asset,
                 reason,
                 waited_s,
+                bid_log,
+                ask_log,
             )
             dropped.append(asset)
         kept = [asset for asset in asset_list if asset in passed]
