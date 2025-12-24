@@ -52,6 +52,8 @@ class AssetState:
     mark_ts: float = 0.0
     spot_proxy: float = 0.0
     spot_proxy_ts: float = 0.0
+    spot_sanity_failed: bool = False
+    spot_sanity_action: str = "ok"
 
     def ready(self) -> bool:
         return self.spot.has_liquidity() and self.perp.has_liquidity() and self.mark_price > 0
@@ -234,7 +236,20 @@ class SpotPerpPaperEngine:
         self._maker_probe_skip_logged: Dict[str, bool] = {asset: False for asset in self.assets}
         self._maker_probe_table_ready = False
         self._maker_probe_counter = 0
+        self.spot_sanity_min_ratio = self._read_env_float("HL_SPOT_SANITY_MIN_RATIO", 0.5)
+        self.spot_sanity_max_ratio = self._read_env_float("HL_SPOT_SANITY_MAX_RATIO", 2.0)
         self._ensure_maker_probe_table()
+
+    @staticmethod
+    def _read_env_float(var_name: str, default: float) -> float:
+        value = os.getenv(var_name)
+        if value is None:
+            return default
+        try:
+            return float(value)
+        except ValueError:
+            logger.warning("[SPOT_PERP][CONFIG] invalid_env_float var=%s value=%s", var_name, value)
+            return default
 
     @staticmethod
     def _resolve_fee_rate(mode: str, maker_rate: float, taker_rate: float) -> float:
@@ -614,10 +629,51 @@ class SpotPerpPaperEngine:
     def _has_spot_source(self, state: AssetState) -> bool:
         return state.spot.has_liquidity() or state.spot_proxy > 0
 
-    def _effective_spot_prices(self, state: AssetState) -> Tuple[float, float]:
+    def _effective_spot_prices(self, asset: str, state: AssetState) -> Tuple[float, float]:
+        spot_bid = state.spot.best_bid
+        spot_ask = state.spot.best_ask
+        spot_mid = (spot_bid + spot_ask) / 2 if spot_bid > 0 and spot_ask > 0 else 0.0
+        reference = state.mark_price if state.mark_price > 0 else (state.spot_proxy if state.spot_proxy > 0 else 0.0)
+        state.spot_sanity_failed = False
+        state.spot_sanity_action = "ok"
+        if reference > 0 and spot_mid > 0:
+            ratio = spot_mid / reference
+            if ratio < self.spot_sanity_min_ratio or ratio > self.spot_sanity_max_ratio:
+                if state.spot_proxy > 0:
+                    state.spot_sanity_action = "fallback_to_proxy"
+                    logger.info(
+                        (
+                            "[SPOT_PERP][SPOT_SANITY] asset=%s spot_bid=%.6f spot_ask=%.6f "
+                            "spot_mid=%.6f ref=%.6f ratio=%.6f action=%s"
+                        ),
+                        asset,
+                        spot_bid,
+                        spot_ask,
+                        spot_mid,
+                        reference,
+                        ratio,
+                        state.spot_sanity_action,
+                    )
+                    return state.spot_proxy, state.spot_proxy
+                state.spot_sanity_action = "reject_no_proxy"
+                state.spot_sanity_failed = True
+                logger.info(
+                    (
+                        "[SPOT_PERP][SPOT_SANITY] asset=%s spot_bid=%.6f spot_ask=%.6f "
+                        "spot_mid=%.6f ref=%.6f ratio=%.6f action=%s"
+                    ),
+                    asset,
+                    spot_bid,
+                    spot_ask,
+                    spot_mid,
+                    reference,
+                    ratio,
+                    state.spot_sanity_action,
+                )
+                return spot_bid, spot_ask
         if state.spot_proxy > 0 and not state.spot.has_liquidity():
             return state.spot_proxy, state.spot_proxy
-        return state.spot.best_bid, state.spot.best_ask
+        return spot_bid, spot_ask
 
     async def _heartbeat_loop(self, stop_event: Optional[asyncio.Event]) -> None:
         while self._running and (not stop_event or not stop_event.is_set()):
@@ -660,7 +716,7 @@ class SpotPerpPaperEngine:
             spot_ok = (counts["spot"] > 0 and state.spot.has_liquidity()) or state.spot_proxy > 0
             perp_ok = counts["perp"] > 0 and state.perp.has_liquidity()
             mark_ok = counts["mark"] > 0 and state.mark_price > 0
-            spot_bid, spot_ask = self._effective_spot_prices(state)
+            spot_bid, spot_ask = self._effective_spot_prices(asset, state)
             logger.info(
                 (
                     "[SPOT_PERP][INFO] heartbeat asset=%s "
@@ -790,7 +846,7 @@ class SpotPerpPaperEngine:
     ) -> Tuple[bool, Optional[str], Dict[str, Any]]:
         """Evaluate readiness gates for an asset and provide trace-friendly details."""
 
-        spot_bid, spot_ask = self._effective_spot_prices(state)
+        spot_bid, spot_ask = self._effective_spot_prices(asset, state)
         spot_available = self._has_spot_source(state)
         spot_incomplete = snapshot.get("spot_incomplete")
         if state.spot_proxy > 0 and not state.spot.has_liquidity():
@@ -799,6 +855,7 @@ class SpotPerpPaperEngine:
         gates = {
             "has_spot_book": spot_available,
             "has_perp_book": state.perp.has_liquidity(),
+            "spot_sanity_ok": not state.spot_sanity_failed,
             "not_incomplete": not (spot_incomplete or snapshot.get("perp_incomplete")),
             "not_stale": not snapshot.get("stale"),
             "not_crossed": not snapshot.get("crossed"),
@@ -811,6 +868,8 @@ class SpotPerpPaperEngine:
             reason = "SKIP_NO_MARK"
         elif not gates["has_spot_book"] or not gates["has_perp_book"]:
             reason = "SKIP_NO_BOOK"
+        elif not gates["spot_sanity_ok"]:
+            reason = "spot_sanity_failed"
         elif not gates["not_incomplete"]:
             reason = "SKIP_INCOMPLETE"
         elif not gates["not_stale"]:
@@ -866,7 +925,7 @@ class SpotPerpPaperEngine:
         if reason == "SKIP_NO_BOOK":
             spot_book = getattr(self.client, "_orderbooks_spot", {}).get(asset, None)
             perp_book = getattr(self.client, "_orderbooks_perp", {}).get(asset, None)
-            spot_bbo = self._effective_spot_prices(state)
+            spot_bbo = self._effective_spot_prices(asset, state)
             perp_bbo = (state.perp.best_bid, state.perp.best_ask)
             logger.info(
                 "[NO_BOOK_DEBUG] asset=%s "
@@ -904,7 +963,7 @@ class SpotPerpPaperEngine:
             reason,
             self._format_age_ms(snapshot.get("spot_age_ms")),
             self._format_age_ms(snapshot.get("perp_age_ms")),
-            *self._effective_spot_prices(state),
+            *self._effective_spot_prices(asset, state),
             state.perp.best_bid,
             state.perp.best_ask,
         )
@@ -995,7 +1054,7 @@ class SpotPerpPaperEngine:
             reconnect_counts,
         )
         for asset, state in self.asset_state.items():
-            spot_bid, spot_ask = self._effective_spot_prices(state)
+            spot_bid, spot_ask = self._effective_spot_prices(asset, state)
             logger.info(
                 (
                     "[SPOT_PERP][LAST_PRICES] asset=%s spot_bid=%.6f spot_ask=%.6f perp_bid=%.6f "
@@ -1020,7 +1079,7 @@ class SpotPerpPaperEngine:
             self._log_strategy_skip(asset, reason, snapshot)
             return
 
-        spot_bid, spot_ask = self._effective_spot_prices(state)
+        spot_bid, spot_ask = self._effective_spot_prices(asset, state)
         perp = state.perp
         notional = max(self.trading.min_position_size, 1.0)
         funding_estimate = state.funding_rate * notional
@@ -1286,7 +1345,7 @@ class SpotPerpPaperEngine:
             getattr(self.client, "reconnect_counts", {}),
         )
         for asset, state in self.asset_state.items():
-            spot_bid, spot_ask = self._effective_spot_prices(state)
+            spot_bid, spot_ask = self._effective_spot_prices(asset, state)
             logger.info(
                 (
                     "[SPOT_PERP][SUMMARY_PRICES] asset=%s spot_bid=%.6f spot_ask=%.6f "
