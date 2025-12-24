@@ -81,6 +81,7 @@ async def _run_engine(
         validation_settings=settings.validation,
         would_trade=settings.strategy.would_trade,
         trace_every_seconds=settings.strategy.trace_every_seconds,
+        auto_assets_enabled=auto_assets,
     )
 
     stop_event = asyncio.Event()

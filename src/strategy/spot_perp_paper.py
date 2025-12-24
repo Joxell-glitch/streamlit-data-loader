@@ -149,6 +149,10 @@ class SpotPerpPaperEngine:
         validation_settings: Optional[ValidationSettings] = None,
         would_trade: bool = False,
         trace_every_seconds: int = 10,
+        auto_assets_enabled: bool = False,
+        auto_assets_warmup_seconds: float = 3.0,
+        auto_assets_warmup_interval: float = 0.25,
+        auto_assets_warmup_failure_threshold: int = 3,
     ) -> None:
         self.client = client
         self.assets = list(assets)
@@ -218,6 +222,10 @@ class SpotPerpPaperEngine:
         self._last_spot_diag_log: Dict[str, float] = {asset: 0.0 for asset in self.assets}
         self.would_trade = would_trade
         self.trace_every_seconds = float(trace_every_seconds)
+        self.auto_assets_enabled = auto_assets_enabled
+        self.auto_assets_warmup_seconds = float(auto_assets_warmup_seconds)
+        self.auto_assets_warmup_interval = float(auto_assets_warmup_interval)
+        self.auto_assets_warmup_failure_threshold = int(auto_assets_warmup_failure_threshold)
         self._trace_state: Dict[str, Dict[str, Any]] = {
             asset: {
                 "last_log": 0.0,
@@ -259,6 +267,77 @@ class SpotPerpPaperEngine:
             if pair != default_pair:
                 logger.info("[SPOT_PROXY] %s -> %s", asset, pair)
         self._spot_subscription_coins = list(self._spot_symbol_map.keys())
+
+    def _drop_auto_asset(self, asset: str, reason: str, sanity_failures: int) -> None:
+        if asset not in self.asset_state:
+            return
+        logger.info(
+            "[SPOT_PERP][AUTO_ASSETS] drop asset=%s reason=%s sanity_failures=%d",
+            asset,
+            reason,
+            sanity_failures,
+        )
+        self.asset_state.pop(asset, None)
+        self.assets = [item for item in self.assets if item != asset]
+        self.update_counts.pop(asset, None)
+        self._last_update_log.pop(asset, None)
+        self._last_skip_reason.pop(asset, None)
+        self._last_spot_diag_log.pop(asset, None)
+        self._trace_state.pop(asset, None)
+        self._maker_probe_history.pop(asset, None)
+        self._maker_probe_skip_logged.pop(asset, None)
+
+    async def _run_auto_assets_warmup(self) -> None:
+        if not self.auto_assets_enabled or not self.assets:
+            return
+        interval = max(0.05, self.auto_assets_warmup_interval)
+        deadline = time.time() + max(0.0, self.auto_assets_warmup_seconds)
+        counters: Dict[str, Counter[str]] = {asset: Counter() for asset in self.assets}
+        while time.time() < deadline and self.assets:
+            for asset in list(self.assets):
+                state = self.asset_state.get(asset)
+                if not state:
+                    continue
+                snapshot = self.feed_health.build_asset_snapshot(asset)
+                spot_bid = state.spot.best_bid
+                spot_ask = state.spot.best_ask
+                if spot_bid <= 0:
+                    counters[asset]["no_bids"] += 1
+                if spot_ask <= 0:
+                    counters[asset]["no_asks"] += 1
+                if snapshot.get("spot_incomplete"):
+                    counters[asset]["spot_incomplete"] += 1
+                if spot_bid > 0 and spot_ask > 0 and spot_bid < spot_ask:
+                    spot_spread_bps = (spot_ask - spot_bid) / spot_bid * 10000
+                    if spot_spread_bps > self.max_spot_spread_bps:
+                        counters[asset]["spot_spread_too_wide"] += 1
+            await asyncio.sleep(interval)
+
+        for asset in list(self.assets):
+            asset_counts = counters.get(asset) or Counter()
+            sanity_failures = asset_counts.get("spot_spread_too_wide", 0)
+            spot_incomplete = asset_counts.get("spot_incomplete", 0)
+            no_bids = asset_counts.get("no_bids", 0)
+            no_asks = asset_counts.get("no_asks", 0)
+            threshold = self.auto_assets_warmup_failure_threshold
+            should_drop = any(
+                count >= threshold for count in (sanity_failures, spot_incomplete, no_bids, no_asks)
+            )
+            if not should_drop:
+                continue
+            if sanity_failures >= threshold:
+                reason = "spot_spread_too_wide"
+            elif spot_incomplete >= threshold:
+                reason = "spot_incomplete"
+            elif no_bids >= threshold:
+                reason = "no_bids"
+            else:
+                reason = "no_asks"
+            reason_detail = (
+                f"{reason} spot_incomplete={spot_incomplete} "
+                f"no_bids={no_bids} no_asks={no_asks}"
+            )
+            self._drop_auto_asset(asset, reason_detail, sanity_failures)
 
     def _ensure_maker_probe_table(self) -> None:
         if self._maker_probe_table_ready:
@@ -407,11 +486,6 @@ class SpotPerpPaperEngine:
     async def run_forever(self, stop_event: Optional[asyncio.Event] = None) -> None:
         self._running = True
         logger.info(
-            "[SPOT_PERP][INFO] engine_start assets=%s log_every_seconds=%s",
-            self.assets,
-            self._heartbeat_interval,
-        )
-        logger.info(
             "[MODE] would_trade=%s trace_every_seconds=%.1f",
             self.would_trade,
             self.trace_every_seconds,
@@ -441,6 +515,24 @@ class SpotPerpPaperEngine:
             self.assets,
             spot_symbol_map=self._spot_symbol_map,
             spot_pair_overrides=self._spot_pair_overrides,
+        )
+        if self.auto_assets_enabled:
+            logger.info(
+                (
+                    "[SPOT_PERP][AUTO_ASSETS] warmup_start assets=%s duration=%.1fs "
+                    "interval=%.2fs threshold=%d"
+                ),
+                self.assets,
+                self.auto_assets_warmup_seconds,
+                self.auto_assets_warmup_interval,
+                self.auto_assets_warmup_failure_threshold,
+            )
+            await self._run_auto_assets_warmup()
+
+        logger.info(
+            "[SPOT_PERP][INFO] engine_start assets=%s log_every_seconds=%s",
+            self.assets,
+            self._heartbeat_interval,
         )
 
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(stop_event))
