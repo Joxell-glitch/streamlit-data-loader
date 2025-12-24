@@ -262,6 +262,13 @@ class SpotPerpPaperEngine:
     def _ensure_maker_probe_table(self) -> None:
         if self._maker_probe_table_ready:
             return
+        if self.db_session_factory is get_session and not os.path.exists("config/config.yaml"):
+            if not self._maker_probe_warned:
+                logger.debug(
+                    "[SPOT_PERP][MAKER_PROBE] skipping_table_setup_missing_config path=config/config.yaml"
+                )
+                self._maker_probe_warned = True
+            return
         try:
             with self.db_session_factory() as session:
                 bind = session.get_bind()
@@ -792,7 +799,8 @@ class SpotPerpPaperEngine:
 
         spot_bid, spot_ask = self._effective_spot_prices(state)
         spot_available = self._has_spot_source(state)
-        spot_incomplete = snapshot.get("spot_incomplete")
+        spot_incomplete_raw = bool(snapshot.get("spot_incomplete"))
+        spot_incomplete = spot_incomplete_raw
         if state.spot_proxy > 0 and not state.spot.has_liquidity():
             spot_incomplete = False
 
@@ -807,7 +815,9 @@ class SpotPerpPaperEngine:
         }
 
         reason: Optional[str] = None
-        if not gates["has_mark"]:
+        if spot_incomplete_raw:
+            reason = "spot_sanity_failed"
+        elif not gates["has_mark"]:
             reason = "SKIP_NO_MARK"
         elif not gates["has_spot_book"] or not gates["has_perp_book"]:
             reason = "SKIP_NO_BOOK"

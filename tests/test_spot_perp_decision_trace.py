@@ -79,7 +79,7 @@ def test_evaluate_gates_incomplete_books_returns_skip_incomplete():
     }
     ready, reason, details = engine._evaluate_gates("BTC", snapshot, state)
     assert ready is False
-    assert reason == "SKIP_INCOMPLETE"
+    assert reason == "spot_sanity_failed"
     assert details["gates"]["not_incomplete"] is False
 
 
