@@ -6,7 +6,7 @@ import os
 import time
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from src.config.loader import load_config
 from src.config.models import FeedHealthSettings, Settings, TradingSettings, ValidationSettings
@@ -339,6 +339,84 @@ class SpotPerpPaperEngine:
             )
             self._drop_auto_asset(asset, reason_detail, sanity_failures)
 
+    def _remove_asset_from_tracking(self, asset: str) -> None:
+        self.asset_state.pop(asset, None)
+        self.assets = [item for item in self.assets if item != asset]
+        self.update_counts.pop(asset, None)
+        self._last_update_log.pop(asset, None)
+        self._last_skip_reason.pop(asset, None)
+        self._last_spot_diag_log.pop(asset, None)
+        self._trace_state.pop(asset, None)
+        self._maker_probe_history.pop(asset, None)
+        self._maker_probe_skip_logged.pop(asset, None)
+
+    async def _preflight_filter_assets_for_spot_book(
+        self,
+        assets: Iterable[str],
+        timeout_s: float = 6.0,
+        interval_s: float = 0.25,
+        get_snapshot: Optional[
+            Callable[[str], Tuple[Dict[str, Any], Optional[AssetState]]]
+        ] = None,
+    ) -> List[str]:
+        asset_list = list(assets)
+        if not asset_list:
+            return []
+        interval = max(0.05, float(interval_s))
+        start_time = time.time()
+        deadline = start_time + max(0.0, float(timeout_s))
+        pending = set(asset_list)
+        passed: set[str] = set()
+        last_snapshot: Dict[str, Dict[str, Any]] = {}
+        getter = get_snapshot or (
+            lambda asset: (self.feed_health.build_asset_snapshot(asset), self.asset_state.get(asset))
+        )
+        logger.info(
+            "[SPOT_PERP][AUTO_ASSETS][PREFLIGHT] start assets=%s timeout_s=%.2f interval_s=%.2f",
+            asset_list,
+            timeout_s,
+            interval,
+        )
+        while pending and time.time() < deadline:
+            for asset in list(pending):
+                snapshot, state = getter(asset)
+                last_snapshot[asset] = snapshot or {}
+                if not state:
+                    continue
+                spot_bid = state.spot.best_bid
+                spot_ask = state.spot.best_ask
+                if spot_bid > 0 and spot_ask > 0:
+                    logger.info(
+                        "[SPOT_PERP][AUTO_ASSETS][PREFLIGHT] pass asset=%s bid=%.6f ask=%.6f",
+                        asset,
+                        spot_bid,
+                        spot_ask,
+                    )
+                    passed.add(asset)
+                    pending.remove(asset)
+            if pending and time.time() < deadline:
+                await asyncio.sleep(interval)
+        waited_s = max(0.0, time.time() - start_time)
+        dropped: List[str] = []
+        for asset in list(pending):
+            snapshot = last_snapshot.get(asset) or {}
+            spot_not_ready = bool(snapshot.get("spot_never_received") or snapshot.get("spot_incomplete"))
+            reason = "spot_book_not_ready" if spot_not_ready else "spot_book_empty"
+            logger.info(
+                "[SPOT_PERP][AUTO_ASSETS][PREFLIGHT] drop asset=%s reason=%s waited_s=%.2f",
+                asset,
+                reason,
+                waited_s,
+            )
+            dropped.append(asset)
+        kept = [asset for asset in asset_list if asset in passed]
+        logger.info(
+            "[SPOT_PERP][AUTO_ASSETS][PREFLIGHT] done kept=%s dropped=%s",
+            kept,
+            dropped,
+        )
+        return kept
+
     def _ensure_maker_probe_table(self) -> None:
         if self._maker_probe_table_ready:
             return
@@ -517,6 +595,19 @@ class SpotPerpPaperEngine:
             spot_pair_overrides=self._spot_pair_overrides,
         )
         if self.auto_assets_enabled:
+            preflight_assets = await self._preflight_filter_assets_for_spot_book(
+                self.assets,
+                timeout_s=6.0,
+                interval_s=0.25,
+            )
+            dropped_assets = [asset for asset in self.assets if asset not in preflight_assets]
+            for asset in dropped_assets:
+                self._remove_asset_from_tracking(asset)
+            self.assets = preflight_assets
+            if not self.assets:
+                logger.info("[SPOT_PERP][AUTO_ASSETS][PREFLIGHT] no_assets_remaining")
+                self._running = False
+                return
             logger.info(
                 (
                     "[SPOT_PERP][AUTO_ASSETS] warmup_start assets=%s duration=%.1fs "

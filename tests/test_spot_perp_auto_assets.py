@@ -167,3 +167,53 @@ def test_auto_assets_warmup_drops_spread_failures():
         {"bid": 1.0, "ask": 1.5, "ts": 1.0, "bids": [[1.0, 1.0]], "asks": [[1.5, 1.0]]},
     )
     assert called["compute"] is False
+
+
+def test_auto_assets_preflight_filters_empty_spot_books():
+    trading_settings = TradingSettings(
+        quote_asset="USDC",
+        initial_quote_balance=1000.0,
+        min_position_size=1.0,
+        max_position_size=10.0,
+        min_edge_threshold=0.0,
+        safety_slippage_buffer=0.0,
+        max_concurrent_triangles=1,
+        max_spot_spread_bps=50.0,
+    )
+    feed_health_settings = FeedHealthSettings()
+    feed_health = FeedHealthTracker(feed_health_settings)
+    engine = SpotPerpPaperEngine(
+        DummyClient(),
+        assets=["AAA", "BBB"],
+        trading=trading_settings,
+        feed_health_settings=feed_health_settings,
+        feed_health_tracker=feed_health,
+        auto_assets_enabled=True,
+    )
+
+    engine.asset_state["AAA"].spot = BookSnapshot(best_bid=0.0, best_ask=0.0)
+    engine.asset_state["BBB"].spot = BookSnapshot(best_bid=0.0, best_ask=0.0)
+
+    calls = {"AAA": 0, "BBB": 0}
+
+    def _snapshot(asset):
+        calls[asset] += 1
+        if asset == "AAA" and calls[asset] >= 2:
+            engine.asset_state["AAA"].spot = BookSnapshot(best_bid=1.0, best_ask=1.1)
+        snapshot = {"spot_incomplete": False, "spot_never_received": False}
+        if asset == "BBB":
+            snapshot["spot_incomplete"] = True
+        return snapshot, engine.asset_state[asset]
+
+    import asyncio
+
+    filtered = asyncio.run(
+        engine._preflight_filter_assets_for_spot_book(
+            ["AAA", "BBB"],
+            timeout_s=0.12,
+            interval_s=0.05,
+            get_snapshot=_snapshot,
+        )
+    )
+
+    assert filtered == ["AAA"]
