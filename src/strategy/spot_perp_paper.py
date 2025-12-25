@@ -287,6 +287,7 @@ class SpotPerpPaperEngine:
         self._maker_probe_skip_logged: Dict[str, bool] = {asset: False for asset in self.assets}
         self._maker_probe_table_ready = False
         self._maker_probe_counter = 0
+        self._db_factory_return_logged = False
         self._maker_probe_persistence_enabled = os.getenv("SPOT_PERP_DISABLE_MAKER_PROBE", "").lower() not in (
             "1",
             "true",
@@ -549,20 +550,42 @@ class SpotPerpPaperEngine:
                 self._maker_probe_warned = True
             return
         try:
-            session = self.db_session_factory()
-            try:
+            with self._maker_probe_session() as session:
                 bind = session.get_bind()
                 if bind:
                     Base.metadata.create_all(bind=bind, tables=[MakerProbe.__table__])
                     self._maker_probe_table_ready = True
-            finally:
-                close = getattr(session, "close", None)
-                if callable(close):
-                    close()
         except Exception:
             if not self._maker_probe_warned:
                 logger.warning("[SPOT_PERP][MAKER_PROBE] ensure_table_failed", exc_info=True)
                 self._maker_probe_warned = True
+
+    @staticmethod
+    def _is_session_like(candidate: Any) -> bool:
+        return all(
+            hasattr(candidate, attribute)
+            for attribute in ("execute", "get_bind", "commit", "close")
+        )
+
+    @contextlib.contextmanager
+    def _maker_probe_session(self):
+        obj = self.db_session_factory()
+        if not self._db_factory_return_logged:
+            logger.debug("[SPOT_PERP][MAKER_PROBE] db_factory_return=%s", type(obj))
+            self._db_factory_return_logged = True
+        if callable(obj) and not self._is_session_like(obj):
+            obj = obj()
+        if hasattr(obj, "__enter__") and hasattr(obj, "__exit__"):
+            with obj as session:
+                yield session
+            return
+        session = obj
+        try:
+            yield session
+        finally:
+            close = getattr(session, "close", None)
+            if callable(close):
+                close()
 
     def _get_snapshot_pair(
         self, asset: str, kind_curr: str, snapshot: Dict[str, Any]
@@ -596,8 +619,7 @@ class SpotPerpPaperEngine:
             self._ensure_maker_probe_table()
             if not self._maker_probe_table_ready:
                 return
-            session = self.db_session_factory()
-            try:
+            with self._maker_probe_session() as session:
                 last_probe = (
                     session.query(MakerProbe)
                     .filter(MakerProbe.asset == asset, MakerProbe.dt_next_ms <= -0.5)
@@ -658,10 +680,6 @@ class SpotPerpPaperEngine:
                 self._maker_probe_counter += 1
                 if self._maker_probe_counter % 5 == 0:
                     self._log_recent_maker_probes(session)
-            finally:
-                close = getattr(session, "close", None)
-                if callable(close):
-                    close()
         except Exception:
             if not self._maker_probe_warned:
                 logger.warning("[SPOT_PERP][MAKER_PROBE] persist_failed", exc_info=True)
