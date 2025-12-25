@@ -551,6 +551,11 @@ class SpotPerpPaperEngine:
             return
         try:
             with self._maker_probe_session() as session:
+                if not hasattr(session, "get_bind"):
+                    raise TypeError(
+                        "[SPOT_PERP][MAKER_PROBE] session_missing_get_bind type=%s"
+                        % type(session)
+                    )
                 bind = session.get_bind()
                 if bind:
                     Base.metadata.create_all(bind=bind, tables=[MakerProbe.__table__])
@@ -570,12 +575,34 @@ class SpotPerpPaperEngine:
     @contextlib.contextmanager
     def _maker_probe_session(self):
         obj = self.db_session_factory()
-        if not self._db_factory_return_logged:
-            logger.debug("[SPOT_PERP][MAKER_PROBE] db_factory_return=%s", type(obj))
-            self._db_factory_return_logged = True
-        if callable(obj) and not self._is_session_like(obj):
+        chain_types = []
+        max_unwrap = 5
+        for _ in range(max_unwrap):
+            chain_types.append(type(obj))
+            is_ctx = hasattr(obj, "__enter__") and hasattr(obj, "__exit__")
+            is_session_like = self._is_session_like(obj)
+            if is_ctx or is_session_like or not callable(obj):
+                break
             obj = obj()
-        if hasattr(obj, "__enter__") and hasattr(obj, "__exit__"):
+        is_ctx = hasattr(obj, "__enter__") and hasattr(obj, "__exit__")
+        is_session_like = self._is_session_like(obj)
+        callable_flag = callable(obj)
+        if not self._db_factory_return_logged:
+            logger.debug(
+                "[SPOT_PERP][MAKER_PROBE] db_factory_unwrap chain=%s final=%s is_ctx=%s is_session_like=%s callable=%s",
+                chain_types,
+                type(obj),
+                is_ctx,
+                is_session_like,
+                callable_flag,
+            )
+            self._db_factory_return_logged = True
+        if callable_flag and not is_session_like and not is_ctx:
+            raise TypeError(
+                "[SPOT_PERP][MAKER_PROBE] db_factory_unwrap_failed final=%s"
+                % type(obj)
+            )
+        if is_ctx:
             with obj as session:
                 yield session
             return
