@@ -233,6 +233,8 @@ class SpotPerpPaperEngine:
         self._metrics_interval = float(os.getenv("SPOT_PERP_METRICS_INTERVAL", "30"))
         self._last_metrics_log = time.time()
         self._validation_first_tick_logged = False
+        self._log_below_min_edge_enabled = os.getenv("SPOT_PERP_LOG_BELOW_MIN_EDGE", "0") == "1"
+        self._below_edge_last_log_ts: Dict[str, float] = {}
         self.opportunities_seen = 0
         self.trades_executed = 0
         self.pnl_estimated = 0.0
@@ -1303,6 +1305,41 @@ class SpotPerpPaperEngine:
             note or "evaluation_not_implemented",
         )
 
+    def _log_below_min_edge(self, edge_snapshot: SpotPerpEdgeSnapshot, spot_age_ms: Optional[float]) -> None:
+        if not self._log_below_min_edge_enabled:
+            return
+        now = time.time()
+        last_log = self._below_edge_last_log_ts.get(edge_snapshot.asset, 0.0)
+        if now - last_log < 5.0:
+            return
+        self._below_edge_last_log_ts[edge_snapshot.asset] = now
+        logger.info(
+            (
+                "[SPOT_PERP][BELOW_MIN_EDGE] asset=%s spread_gross=%+.6f edge_bps=%.2f "
+                "min_edge_threshold=%.6f min_edge_bps=%.2f total_cost_bps=%.2f "
+                "effective_threshold_bps=%.2f spot_spread_bps=%.2f perp_spread_bps=%.2f "
+                "buffer_bps=%.6f slippage_rate=%.6f funding_estimate=%+.6f fee_mode=%s "
+                "spot_fee_mode=%s perp_fee_mode=%s below_min_edge=%s spot_age_ms=%s"
+            ),
+            edge_snapshot.asset,
+            edge_snapshot.spread_gross,
+            edge_snapshot.edge_bps,
+            edge_snapshot.min_edge_threshold,
+            edge_snapshot.min_edge_bps,
+            edge_snapshot.total_cost_bps * 10000,
+            edge_snapshot.effective_threshold_bps,
+            edge_snapshot.spot_spread_bps * 10000,
+            edge_snapshot.perp_spread_bps * 10000,
+            edge_snapshot.buffer_bps,
+            edge_snapshot.slippage_rate,
+            edge_snapshot.funding_estimate,
+            self.default_fee_mode,
+            self.spot_fee_mode,
+            self.perp_fee_mode,
+            edge_snapshot.below_min_edge,
+            self._format_age_ms(spot_age_ms),
+        )
+
     def _log_metrics(self) -> None:
         reconnect_counts = getattr(self.client, "reconnect_counts", {})
         logger.info(
@@ -1460,6 +1497,7 @@ class SpotPerpPaperEngine:
         if edge_snapshot.below_min_edge:
             decision = "REJECT"
             reject_reason = "BELOW_MIN_EDGE"
+            self._log_below_min_edge(edge_snapshot, snapshot.get("spot_age_ms"))
         elif pnl_nonpos:
             decision = "REJECT"
             reject_reason = "PNL_NONPOS"
