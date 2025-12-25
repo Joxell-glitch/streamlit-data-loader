@@ -287,7 +287,13 @@ class SpotPerpPaperEngine:
         self._maker_probe_skip_logged: Dict[str, bool] = {asset: False for asset in self.assets}
         self._maker_probe_table_ready = False
         self._maker_probe_counter = 0
-        self._ensure_maker_probe_table()
+        self._maker_probe_persistence_enabled = os.getenv("SPOT_PERP_DISABLE_MAKER_PROBE", "").lower() not in (
+            "1",
+            "true",
+            "yes",
+        )
+        if self._maker_probe_persistence_enabled:
+            self._ensure_maker_probe_table()
 
     @staticmethod
     def _resolve_fee_rate(mode: str, maker_rate: float, taker_rate: float) -> float:
@@ -531,6 +537,8 @@ class SpotPerpPaperEngine:
         return kept
 
     def _ensure_maker_probe_table(self) -> None:
+        if not self._maker_probe_persistence_enabled:
+            return
         if self._maker_probe_table_ready:
             return
         if self.db_session_factory is get_session and not os.path.exists("config/config.yaml"):
@@ -541,11 +549,16 @@ class SpotPerpPaperEngine:
                 self._maker_probe_warned = True
             return
         try:
-            with self.db_session_factory() as session:
+            session = self.db_session_factory()
+            try:
                 bind = session.get_bind()
                 if bind:
                     Base.metadata.create_all(bind=bind, tables=[MakerProbe.__table__])
                     self._maker_probe_table_ready = True
+            finally:
+                close = getattr(session, "close", None)
+                if callable(close):
+                    close()
         except Exception:
             if not self._maker_probe_warned:
                 logger.warning("[SPOT_PERP][MAKER_PROBE] ensure_table_failed", exc_info=True)
@@ -575,13 +588,16 @@ class SpotPerpPaperEngine:
         ts_ms = now_ms()
         spot_snapshot = {"ts": ts_ms, "bid": spot_bid, "ask": spot_ask}
         perp_snapshot = {"ts": ts_ms, "bid": perp_bid, "ask": perp_ask}
+        spot_curr, spot_next, _ = self._get_snapshot_pair(asset, "spot", spot_snapshot)
+        perp_curr, perp_next, _ = self._get_snapshot_pair(asset, "perp", perp_snapshot)
+        if not self._maker_probe_persistence_enabled:
+            return
         try:
             self._ensure_maker_probe_table()
             if not self._maker_probe_table_ready:
                 return
-            spot_curr, spot_next, _ = self._get_snapshot_pair(asset, "spot", spot_snapshot)
-            perp_curr, perp_next, _ = self._get_snapshot_pair(asset, "perp", perp_snapshot)
-            with self.db_session_factory() as session:
+            session = self.db_session_factory()
+            try:
                 last_probe = (
                     session.query(MakerProbe)
                     .filter(MakerProbe.asset == asset, MakerProbe.dt_next_ms <= -0.5)
@@ -642,6 +658,10 @@ class SpotPerpPaperEngine:
                 self._maker_probe_counter += 1
                 if self._maker_probe_counter % 5 == 0:
                     self._log_recent_maker_probes(session)
+            finally:
+                close = getattr(session, "close", None)
+                if callable(close):
+                    close()
         except Exception:
             if not self._maker_probe_warned:
                 logger.warning("[SPOT_PERP][MAKER_PROBE] persist_failed", exc_info=True)
