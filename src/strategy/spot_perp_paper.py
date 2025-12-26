@@ -660,39 +660,40 @@ class SpotPerpPaperEngine:
         perp_bid: float,
         perp_ask: float,
     ) -> None:
-        last_probe = (
+        max_close = 3
+        open_probes = (
             session.query(MakerProbe)
             .filter(
                 MakerProbe.asset == asset,
                 MakerProbe.ts.isnot(None),
-                or_(
-                    MakerProbe.dt_next_ms.is_(None),
-                    MakerProbe.dt_next_ms < 0,
-                    MakerProbe.spot_bid_next.is_(None),
-                    MakerProbe.spot_ask_next.is_(None),
-                    MakerProbe.perp_bid_next.is_(None),
-                    MakerProbe.perp_ask_next.is_(None),
-                ),
+                MakerProbe.dt_next_ms < 0,
             )
-            .order_by(MakerProbe.ts.desc())
-            .first()
+            .order_by(MakerProbe.id.desc())
+            .limit(max_close)
+            .all()
         )
-        if not last_probe:
+        if not open_probes:
             return
-        prev_ts = last_probe.ts or ts_ms
-        dt_next_ms = max(0.0, float(ts_ms - prev_ts))
-        last_probe.spot_bid_next = spot_bid
-        last_probe.spot_ask_next = spot_ask
-        last_probe.perp_bid_next = perp_bid
-        last_probe.perp_ask_next = perp_ask
-        last_probe.dt_next_ms = dt_next_ms
-        session.flush()
-        logger.info(
-            "[SPOT_PERP][MAKER_PROBE] update_next id=%s asset=%s dt_next_ms=%.1f",
-            last_probe.id,
-            asset,
-            dt_next_ms,
-        )
+        updated = False
+        for probe in open_probes:
+            age_ms = ts_ms - probe.ts
+            if age_ms > 300_000:
+                break
+            dt_next_ms = max(0.0, float(age_ms))
+            probe.spot_bid_next = spot_bid
+            probe.spot_ask_next = spot_ask
+            probe.perp_bid_next = perp_bid
+            probe.perp_ask_next = perp_ask
+            probe.dt_next_ms = dt_next_ms
+            updated = True
+            logger.info(
+                "[SPOT_PERP][MAKER_PROBE] update_next id=%s asset=%s dt_next_ms=%.1f",
+                probe.id,
+                asset,
+                dt_next_ms,
+            )
+        if updated:
+            session.flush()
 
     def _record_maker_probe(
         self,
