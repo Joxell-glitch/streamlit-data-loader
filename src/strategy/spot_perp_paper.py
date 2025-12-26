@@ -288,6 +288,8 @@ class SpotPerpPaperEngine:
         self._maker_probe_table_ready = False
         self._maker_probe_counter = 0
         self._db_factory_return_logged = False
+        self._maker_probe_persist_log_emitted = False
+        self._maker_probe_table_log_emitted: Dict[str, bool] = {asset: False for asset in self.assets}
         self._maker_probe_persistence_enabled = os.getenv("SPOT_PERP_DISABLE_MAKER_PROBE", "").lower() not in (
             "1",
             "true",
@@ -377,6 +379,7 @@ class SpotPerpPaperEngine:
             self._maker_probe_skip_logged[asset] = False
             self._maker_probe_always_last_ts[asset] = 0
             self._maker_probe_always_last_log_ts[asset] = 0
+            self._maker_probe_table_log_emitted[asset] = False
         if new_assets:
             self._init_spot_proxy_maps()
         return new_assets
@@ -657,15 +660,35 @@ class SpotPerpPaperEngine:
         perp_ask: float,
     ) -> None:
         ts_ms = now_ms()
+        logger.debug(
+            "[SPOT_PERP][MAKER_PROBE] entered_record asset=%s persistence_enabled=%s table_ready=%s db_path=%s",
+            asset,
+            self._maker_probe_persistence_enabled,
+            self._maker_probe_table_ready,
+            getattr(self.db_session_factory, "db_path", None),
+        )
         spot_snapshot = {"ts": ts_ms, "bid": spot_bid, "ask": spot_ask}
         perp_snapshot = {"ts": ts_ms, "bid": perp_bid, "ask": perp_ask}
         spot_curr, spot_next, _ = self._get_snapshot_pair(asset, "spot", spot_snapshot)
         perp_curr, perp_next, _ = self._get_snapshot_pair(asset, "perp", perp_snapshot)
         if not self._maker_probe_persistence_enabled:
+            if not self._maker_probe_persist_log_emitted:
+                logger.info(
+                    "[SPOT_PERP][MAKER_PROBE] skip reason=persistence_disabled db_path=%s",
+                    getattr(self.db_session_factory, "db_path", None),
+                )
+                self._maker_probe_persist_log_emitted = True
             return
         try:
             self._ensure_maker_probe_table()
             if not self._maker_probe_table_ready:
+                if not self._maker_probe_table_log_emitted.get(asset, False):
+                    logger.warning(
+                        "[SPOT_PERP][MAKER_PROBE] skip reason=table_not_ready asset=%s db_path=%s",
+                        asset,
+                        getattr(self.db_session_factory, "db_path", None),
+                    )
+                    self._maker_probe_table_log_emitted[asset] = True
                 return
             with self._maker_probe_session() as session:
                 last_probe = (
@@ -730,7 +753,7 @@ class SpotPerpPaperEngine:
                     self._log_recent_maker_probes(session)
         except Exception:
             if not self._maker_probe_warned:
-                logger.warning("[SPOT_PERP][MAKER_PROBE] persist_failed", exc_info=True)
+                logger.exception("[SPOT_PERP][MAKER_PROBE] persist_failed")
                 self._maker_probe_warned = True
 
     def _maybe_record_maker_probe_always(self, edge_snapshot: SpotPerpEdgeSnapshot) -> None:
@@ -786,6 +809,16 @@ class SpotPerpPaperEngine:
             return
         ts_ms = now_ms()
         last_ts = self._maker_probe_always_last_ts.get(asset, 0)
+        last_log_ts = self._maker_probe_always_last_log_ts.get(asset, 0)
+        if ts_ms - last_log_ts >= max(self._maker_probe_always_interval_ms, 1000):
+            logger.debug(
+                "[SPOT_PERP][MAKER_PROBE] entered_always asset=%s ts_ms=%s last_ts=%s interval_ms=%s",
+                asset,
+                ts_ms,
+                last_ts,
+                self._maker_probe_always_interval_ms,
+            )
+            self._maker_probe_always_last_log_ts[asset] = ts_ms
         if ts_ms - last_ts < self._maker_probe_always_interval_ms:
             return
         self._maker_probe_always_last_ts[asset] = ts_ms
@@ -1626,6 +1659,10 @@ class SpotPerpPaperEngine:
         if asset not in self.asset_state:
             return None
         state = self.asset_state[asset]
+        spot_bid, spot_ask = self._effective_spot_prices(state)
+        perp_bid = state.perp.best_bid
+        perp_ask = state.perp.best_ask
+        self._maybe_record_maker_probe_always_quotes(asset, spot_bid, spot_ask, perp_bid, perp_ask)
         snapshot = self.feed_health.build_asset_snapshot(asset)
         ready, reason, _ = self._evaluate_gates(asset, snapshot, state)
         if not ready or reason:
