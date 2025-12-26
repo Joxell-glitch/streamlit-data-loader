@@ -4,6 +4,16 @@ This repository contains an asynchronous Python 3.8+ paper-trading bot for **tri
 
 > **Important:** This project is **paper trading only**. It never sends live orders. Use it to research and rehearse before building a real execution layer.
 
+## Project Evolution & Objective
+
+The original concept targeted classic spot-only triangular arbitrage on Hyperliquid. During development, it became clear that most spot markets are quoted only against stablecoins and that cross pairs between non-stable assets do not exist. This makes traditional spot-only triangles structurally impossible on Hyperliquid.
+
+The project therefore pivoted to **synthetic triangular arbitrage**, combining:
+- **Spot / Perpetual**
+- **Perpetual / Perpetual**
+
+The system is **research-first** and **paper-only**. It is designed to measure realistic edge after **maker/taker fees**, latency, slippage, and market microstructure constraints. The current objective is to build a research-grade paper trading system that continuously scans the entire Hyperliquid universe to detect inefficiencies, quantify fee-adjusted edge, evaluate fill probability, and adapt to market changes without executing live orders.
+
 ## Features
 - Async architecture with `httpx` (REST) and `websockets` (order books).
 - Configurable via YAML (`config/config.yaml`) plus environment variables loaded from `.env`.
@@ -13,6 +23,43 @@ This repository contains an asynchronous Python 3.8+ paper-trading bot for **tri
 - Offline analysis to compute performance metrics and recommend parameter tweaks.
 - Typer-based CLI to run the bot, init the DB, measure latency, and analyze past runs.
 - GitHub Actions CI running pytest.
+
+## Roadmap & Project Status
+
+### A) Runtime Stability & Baseline
+Establish a stable, long-running paper-trading loop for synthetic triangles.
+- [DONE] Spot/Perp paper trading loop and persistence
+- [DONE] Per-run IDs, SQLite logging, and heartbeats
+- [TODO] Perp/Perp baseline paper loop parity with Spot/Perp
+
+### B) Feed Integrity & Observability
+Ensure data quality and traceability across REST/WS feeds.
+- [DONE] WebSocket reconnects with exponential backoff
+- [DONE] API latency measurement tooling
+- [TODO] Unified feed health dashboard for spot/perp/perp streams
+
+### C) Strategy Logic Validation (NO PnL optimization)
+Validate correctness of pricing logic before optimization.
+- [DONE] Depth-aware edge estimation for Spot/Perp
+- [TODO] Perp/Perp synthetic triangle validation suite
+- [TODO] Maker and taker fee modeling parity across all paths
+
+### D) Dataset & Offline Analysis
+Build research datasets for microstructure and fill-probability studies.
+- [DONE] Run-level storage of opportunities in SQLite
+- [TODO] Standardized datasets for slippage/latency attribution
+- [TODO] Offline fill-probability and microstructure labeling
+
+### E) Hardening & Risk Controls
+Add guardrails appropriate for a future live system without enabling execution.
+- [TODO] Auto-scan universe to detect newly listed assets and shifting edge
+- [TODO] Dynamic asset activation/deactivation based on edge decay
+- [TODO] Explicit separation between research metrics and any live execution layer
+
+### F) Future Extensions (post-validation)
+Post-research enhancements once the synthetic model is validated.
+- [TODO] Optional real execution layer (separate service)
+- [BLOCKED] Live trading pending strategy validation, risk controls, and regulatory review
 
 ## Requirements
 - Python 3.8
