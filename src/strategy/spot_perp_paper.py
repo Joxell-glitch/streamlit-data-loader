@@ -1898,6 +1898,27 @@ class SpotPerpPaperEngine:
             funding_estimate=edge_snapshot.funding_estimate,
             pnl_net_estimated=edge_snapshot.pnl_net_est,
         )
+        # Explicit synthetic Spot/Perp trade model (paper-only, no execution).
+        synthetic_trade = SyntheticSpotPerpTrade(
+            asset=asset,
+            spot_symbol=self._asset_spot_pairs.get(asset, asset),
+            perp_symbol=asset,
+            direction=(
+                "long_spot_short_perp"
+                if edge_snapshot.direction == "spot_long"
+                else "short_spot_long_perp"
+            ),
+            spot_price=edge_snapshot.spot_price,
+            perp_price=edge_snapshot.perp_price,
+            spot_qty=edge_snapshot.qty,
+            perp_qty=edge_snapshot.qty,
+            gross_edge=edge_snapshot.spread_gross,
+            net_edge=edge_snapshot.pnl_net_est,
+            fees_spot=edge_snapshot.fee_spot,
+            fees_perp=edge_snapshot.fee_perp,
+            timestamp_ms=now_ms(),
+        )
+        logger.debug("[SPOT_PERP][SYNTHETIC_TRADE] %s", synthetic_trade)
         self._persist_opportunity(
             asset=asset,
             direction=edge_snapshot.direction,
