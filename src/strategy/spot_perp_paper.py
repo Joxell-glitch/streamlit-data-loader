@@ -42,7 +42,6 @@ class SyntheticSpotPerpTrade:
 
 HL_TIER_0_FEE_TAKER_SPOT = 0.001
 HL_TIER_0_FEE_TAKER_PERP = 0.0005
-HL_TIER_LABEL = "HL_TIER_0"
 
 
 def now_ms() -> int:
@@ -222,19 +221,36 @@ class SpotPerpPaperEngine:
         self.trading = trading
         self.validation_settings = validation_settings or ValidationSettings()
         self._validation_config_provided = validation_settings is not None
-        self.taker_fee_spot = taker_fee_spot
-        self.taker_fee_perp = taker_fee_perp
+        config_taker_fee_spot = getattr(trading, "taker_fee_spot", None)
+        config_taker_fee_perp = getattr(trading, "taker_fee_perp", None)
+        self.taker_fee_spot = (
+            config_taker_fee_spot if config_taker_fee_spot is not None else taker_fee_spot
+        )
+        self.taker_fee_perp = (
+            config_taker_fee_perp if config_taker_fee_perp is not None else taker_fee_perp
+        )
         default_fee_mode = str(getattr(trading, "fee_mode", "maker")).lower()
         self.default_fee_mode = default_fee_mode
         self.maker_fee_spot = getattr(trading, "maker_fee_spot", 0.0)
         self.maker_fee_perp = getattr(trading, "maker_fee_perp", 0.0)
         self.spot_fee_mode = str(getattr(trading, "spot_fee_mode", default_fee_mode)).lower()
         self.perp_fee_mode = str(getattr(trading, "perp_fee_mode", default_fee_mode)).lower()
+        self._validate_maker_fee_config()
         self.effective_fee_spot_rate = (
             self.maker_fee_spot if self.spot_fee_mode == "maker" else self.taker_fee_spot
         )
         self.effective_fee_perp_rate = (
             self.maker_fee_perp if self.perp_fee_mode == "maker" else self.taker_fee_perp
+        )
+        self.effective_fee_spot_source = self._resolve_effective_fee_source(
+            self.spot_fee_mode,
+            self.taker_fee_spot,
+            HL_TIER_0_FEE_TAKER_SPOT,
+        )
+        self.effective_fee_perp_source = self._resolve_effective_fee_source(
+            self.perp_fee_mode,
+            self.taker_fee_perp,
+            HL_TIER_0_FEE_TAKER_PERP,
         )
         self._fee_config_warned = False
         self._warn_fee_config_if_suspect()
@@ -340,6 +356,31 @@ class SpotPerpPaperEngine:
     @staticmethod
     def _resolve_fee_rate(mode: str, maker_rate: float, taker_rate: float) -> float:
         return maker_rate if str(mode).lower() == "maker" else taker_rate
+
+    def _resolve_effective_fee_source(
+        self,
+        mode: str,
+        taker_rate: float,
+        taker_default: float,
+    ) -> str:
+        if str(mode).lower() == "maker":
+            return "config"
+        return "fallback" if taker_rate == taker_default else "config"
+
+    def _validate_maker_fee_config(self) -> None:
+        maker_mode_enabled = (
+            self.default_fee_mode == "maker"
+            or self.spot_fee_mode == "maker"
+            or self.perp_fee_mode == "maker"
+        )
+        if not maker_mode_enabled:
+            return
+        if self.maker_fee_spot > 0.0 or self.maker_fee_perp > 0.0:
+            raise RuntimeError(
+                "Invalid fee configuration: maker fees must be 0.0 on Hyperliquid for maker-mode paper. "
+                "Set maker_fee_spot and maker_fee_perp to 0.0 (config.yaml is local/gitignored), "
+                "or switch to taker mode."
+            )
 
     def _warn_fee_config_if_suspect(self) -> None:
         if self._fee_config_warned:
@@ -982,22 +1023,22 @@ class SpotPerpPaperEngine:
         )
         logger.info(
             (
-                "[SPOT_PERP][INFO] fees fee_spot=%.6f fee_perp=%.6f fee_tier=%s "
-                "fee_mode=%s spot_fee_mode=%s perp_fee_mode=%s eff_spot_rate=%.6f eff_perp_rate=%.6f "
-                "maker_fee_spot=%.6f maker_fee_perp=%.6f taker_fee_spot=%.6f taker_fee_perp=%.6f"
+                "[SPOT_PERP][FEE_CONFIG] fee_mode=%s spot_fee_mode=%s perp_fee_mode=%s "
+                "maker_fee_spot=%.6f maker_fee_perp=%.6f taker_fee_spot=%.6f taker_fee_perp=%.6f "
+                "effective_fee_spot_rate=%.6f effective_fee_perp_rate=%.6f "
+                "effective_fee_spot_source=%s effective_fee_perp_source=%s"
             ),
-            self.taker_fee_spot,
-            self.taker_fee_perp,
-            HL_TIER_LABEL,
             self.default_fee_mode,
             self.spot_fee_mode,
             self.perp_fee_mode,
-            self.effective_fee_spot_rate,
-            self.effective_fee_perp_rate,
             self.maker_fee_spot,
             self.maker_fee_perp,
             self.taker_fee_spot,
             self.taker_fee_perp,
+            self.effective_fee_spot_rate,
+            self.effective_fee_perp_rate,
+            self.effective_fee_spot_source,
+            self.effective_fee_perp_source,
         )
         await self.start_market_data()
         if self.auto_assets_enabled:

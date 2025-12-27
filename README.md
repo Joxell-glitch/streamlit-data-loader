@@ -186,6 +186,11 @@ python -m pip check
    ```
    La dashboard chiama sempre il backend FastAPI configurato in `NEXT_PUBLIC_BACKEND_URL` (nessun accesso diretto a file o SQLite) ed è pensata per monitorare prima il paper trading e in futuro il live.
 
+## Fee configuration (important)
+- `config/config.yaml` is intentionally gitignored (local-only).
+- `maker_fee_spot` and `maker_fee_perp` **must** be `0.0` when using maker mode (`fee_mode`, `spot_fee_mode`, or `perp_fee_mode` set to `maker`).
+- Taker fees are tier-dependent and must be configured by the user.
+
 ## Bootstrap (one-liner)
 `rm -rf .venv && python3.8 -m venv .venv && source .venv/bin/activate && python -m pip install --upgrade pip setuptools wheel && python -m pip install -r requirements-lock.txt && python -m pip check && python -m src.cli.run_spot_perp_paper --assets BTC`
 
