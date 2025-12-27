@@ -115,6 +115,21 @@ python -m pip check
 - Il database SQLite di default è `data/arb_bot.sqlite` (viene creato automaticamente). Puoi leggerlo con un qualsiasi client SQLite o `python -m sqlite3 data/arb_bot.sqlite ".tables"`.
 - Il file di configurazione di riferimento è `config/config.yaml` (puoi copiarlo da `config/config.example.yaml`).
 
+### Data Retention (FIFO) – SQLite (procedura MANUALE)
+- **Perché serve:** controllare la dimensione del DB, analizzare il regime recente, evitare mixing di regimi troppo diversi nello storico.
+- **Quando usarla:** DB che cresce nel tempo, più coin/asset tracciati, run lunghi.
+- **Backup obbligatorio prima del purge** (non saltare questo passaggio):
+  ```bash
+  cp data/arb_bot.sqlite "data/arb_bot.sqlite.bak.$(date +%Y%m%d-%H%M%S)"
+  ```
+- **Purge “keep last 24h” + VACUUM** (manuale e controllato):
+  ```bash
+  python -m sqlite3 data/arb_bot.sqlite \
+    "DELETE FROM spot_perp_opportunities WHERE timestamp < strftime('%s','now','-24 hours');"
+  python -m sqlite3 data/arb_bot.sqlite "VACUUM;"
+  ```
+- **Nota importante:** non attivare purge automatico di default; è una procedura opzionale e controllata.
+
 ### Dipendenze di sviluppo (opzionali)
 Se vuoi eseguire lint, type-check o test, installa anche i tool DEV (compatibili con Python 3.8) dopo il runtime:
 ```bash
