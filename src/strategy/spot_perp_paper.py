@@ -20,6 +20,24 @@ from src.observability.feed_health import FeedHealthTracker
 
 logger = get_logger(__name__)
 
+# Domain model for a single synthetic Spot/Perp paper trade.
+# Introduced for correctness, validation, and future extensions (Perp/Perp, Lead–Lag).
+@dataclass
+class SyntheticSpotPerpTrade:
+    asset: str
+    spot_symbol: str
+    perp_symbol: str
+    direction: str  # "long_spot_short_perp" oppure "short_spot_long_perp"
+    spot_price: float
+    perp_price: float
+    spot_qty: float
+    perp_qty: float
+    gross_edge: float
+    net_edge: float
+    fees_spot: float
+    fees_perp: float
+    timestamp_ms: int
+
 HL_TIER_0_FEE_TAKER_SPOT = 0.001
 HL_TIER_0_FEE_TAKER_PERP = 0.0005
 HL_TIER_LABEL = "HL_TIER_0"
