@@ -45,12 +45,19 @@ The system is **research-first** and **paper-only**. It is designed to measure r
 
 ## Roadmap & Project Status
 
+### Session Log / Snapshot (2025-12-27)
+- Maker-mode fee policy locked to 0.0 on Hyperliquid with guardrails blocking non-zero maker fees in paper mode.
+- `config/config.yaml` treated as local-only; safe-run workflow temporarily forces maker fees to 0.0 and auto-restores on exit.
+- Canonical spot-perp paper entrypoint standardized on `python -m src.cli.run_spot_perp_paper`.
+- Direction remains research-first/paper-only with next focus on data capture and edge distribution analysis.
+
 ### A) Runtime Stability & Baseline
 Establish a stable, long-running paper-trading loop for synthetic triangles.
 - [TODO] Spot/Perp paper trading loop and persistence (incomplete baseline)
 - [DONE] Per-run IDs, SQLite logging, and heartbeats
 - [TODO] Synthetic Triangle model (Spot/Perp)
 - [TODO] Perp/Perp synthetic baseline (secondary/comparative)
+- [DONE] Canonical entrypoint for Spot/Perp paper runs via `python -m src.cli.run_spot_perp_paper`
 - [DONE] Spot/Spot excluded as structurally irrelevant on Hyperliquid
 
 ### B) Feed Integrity & Observability
@@ -63,11 +70,13 @@ Ensure data quality and traceability across REST/WS feeds.
 Validate correctness of pricing logic before optimization.
 - [DONE] Depth-aware edge estimation for synthetic Spot/Perp
 - [BLOCKED] Synthetic triangle validation suite (Spot/Perp and Perp/Perp) (blocked by A)
-- [BLOCKED] Real-fee parity across synthetic models (maker and taker) (blocked by A)
+- [BLOCKED] Real-fee parity across synthetic models (maker=0.0 per HL policy; taker via config/tier fallback) (blocked by A)
 
 ### D) Dataset & Offline Analysis
 Build research datasets for microstructure and fill-probability studies.
 - [DONE] Run-level storage of opportunities in SQLite
+- [TODO] Run 15–30 min capture and export/analysis of spread_gross / pnl_net_est distributions and exceedance frequency
+- [TODO] Extend spot/perp paper data collection to multi-asset (BTC+ETH) after baseline run
 - [BLOCKED] Synthetic-edge datasets for slippage/latency attribution (blocked by synthetic execution model)
 - [BLOCKED] Research metrics for synthetic edges: net edge distribution, hit-rate, dt_next_ms/latency buckets, fill proxy metrics (blocked by synthetic execution model)
 - [BLOCKED] Offline fill-probability and microstructure labeling for synthetic edges (blocked by synthetic execution model)
@@ -76,6 +85,8 @@ Build research datasets for microstructure and fill-probability studies.
 Add guardrails appropriate for a future live system without enabling execution.
 - [BLOCKED] Universe Auto-Scan (new listings + edge decay + dynamic activation) (dependent on validated synthetic models)
 - [DONE] Paper trading phase explicitly before any live execution
+- [DONE] Maker-mode fee guardrail enforces maker_fee_* = 0.0 in paper mode
+- [DONE] Safe-run workflow temporarily sets maker fees to 0.0 with automatic restore on exit
 - [BLOCKED] Separate live execution layer as its own service (pending validation/risk controls)
 - [BLOCKED] Explicit separation between research metrics and any live execution layer (dependent on validated synthetic models)
 
