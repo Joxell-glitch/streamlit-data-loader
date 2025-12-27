@@ -37,6 +37,8 @@ class SyntheticSpotPerpTrade:
     fees_spot: float
     fees_perp: float
     timestamp_ms: int
+    decision: str
+    reject_reason: str
 
 HL_TIER_0_FEE_TAKER_SPOT = 0.001
 HL_TIER_0_FEE_TAKER_PERP = 0.0005
@@ -1775,12 +1777,11 @@ class SpotPerpPaperEngine:
         fee_spot_source = "config" if self.spot_fee_mode == "maker" else "fallback"
         fee_perp_source = "config" if self.perp_fee_mode == "maker" else "fallback"
         pnl_nonpos = edge_snapshot.pnl_net_est <= 0
-        decision = "PASS"
+        decision = "ACCEPT"
         reject_reason = "OK"
         if edge_snapshot.below_min_edge:
             decision = "REJECT"
             reject_reason = "BELOW_MIN_EDGE"
-            self._log_below_min_edge(edge_snapshot, snapshot.get("spot_age_ms"))
         elif pnl_nonpos:
             decision = "REJECT"
             reject_reason = "PNL_NONPOS"
@@ -1840,8 +1841,14 @@ class SpotPerpPaperEngine:
             fees_spot=edge_snapshot.fee_spot,
             fees_perp=edge_snapshot.fee_perp,
             timestamp_ms=now_ms(),
+            decision=decision,
+            reject_reason=reject_reason,
         )
-        logger.debug("[SPOT_PERP][SYNTHETIC_TRADE] %s", synthetic_trade)
+        if edge_snapshot.spread_gross != 0:
+            logger.debug("[SPOT_PERP][SYNTHETIC_TRADE][OBSERVED] %s", synthetic_trade)
+
+        if edge_snapshot.below_min_edge:
+            self._log_below_min_edge(edge_snapshot, snapshot.get("spot_age_ms"))
         self._log_would_trade(
             asset,
             direction=edge_snapshot.direction,
@@ -1937,6 +1944,8 @@ class SpotPerpPaperEngine:
             fees_spot=edge_snapshot.fee_spot,
             fees_perp=edge_snapshot.fee_perp,
             timestamp_ms=now_ms(),
+            decision=decision,
+            reject_reason=reject_reason,
         )
         logger.debug("[SPOT_PERP][SYNTHETIC_TRADE][TRADEABLE] %s", synthetic_trade)
         self._persist_opportunity(
