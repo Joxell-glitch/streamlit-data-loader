@@ -236,6 +236,8 @@ class SpotPerpPaperEngine:
         self.effective_fee_perp_rate = (
             self.maker_fee_perp if self.perp_fee_mode == "maker" else self.taker_fee_perp
         )
+        self._fee_config_warned = False
+        self._warn_fee_config_if_suspect()
         self.db_session_factory = db_session_factory
         self.feed_health = feed_health_tracker or FeedHealthTracker(feed_health_settings)
         self.client.set_feed_health_tracker(self.feed_health)
@@ -338,6 +340,27 @@ class SpotPerpPaperEngine:
     @staticmethod
     def _resolve_fee_rate(mode: str, maker_rate: float, taker_rate: float) -> float:
         return maker_rate if str(mode).lower() == "maker" else taker_rate
+
+    def _warn_fee_config_if_suspect(self) -> None:
+        if self._fee_config_warned:
+            return
+        suspect_spot = self.spot_fee_mode == "maker" and self.maker_fee_spot >= 0.0002
+        suspect_perp = self.perp_fee_mode == "maker" and self.maker_fee_perp >= 0.0002
+        if not (suspect_spot or suspect_perp):
+            return
+        self._fee_config_warned = True
+        logger.warning(
+            "[SPOT_PERP][WARN] FEE_CONFIG_SUSPECT with these fees the strategy will almost never find edge "
+            "(gross spreads are usually < 5 bps). maker_fee_spot=%.6f maker_fee_perp=%.6f "
+            "taker_fee_spot=%.6f taker_fee_perp=%.6f fee_mode=%s spot_fee_mode=%s perp_fee_mode=%s",
+            self.maker_fee_spot,
+            self.maker_fee_perp,
+            self.taker_fee_spot,
+            self.taker_fee_perp,
+            self.default_fee_mode,
+            self.spot_fee_mode,
+            self.perp_fee_mode,
+        )
 
     @staticmethod
     def _to_rate_maybe_bps(value: Optional[float]) -> float:
