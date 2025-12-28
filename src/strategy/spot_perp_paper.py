@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import os
 import time
 from collections import Counter
@@ -14,6 +15,7 @@ from src.config.loader import load_config
 from src.config.models import FeedHealthSettings, Settings, TradingSettings, ValidationSettings
 from src.core.logging import get_logger
 from src.db.models import Base, DecisionOutcome, DecisionSnapshot, MakerProbe, SpotPerpOpportunity
+from src.db.runtime_status import update_runtime_status
 from src.db.session import get_session
 from src.hyperliquid_client.client import HyperliquidClient
 from src.observability.feed_health import FeedHealthTracker
@@ -81,6 +83,10 @@ class SyntheticSpotPerpExecutor:
 
 HL_TIER_0_FEE_TAKER_SPOT = 0.001
 HL_TIER_0_FEE_TAKER_PERP = 0.0005
+EDGE_WINDOW_SECONDS = 300
+EDGE_DEGRADATION_THRESHOLD = 0.002
+EDGE_DEGRADATION_REQUIRED_WINDOWS = 2
+TAIL_RISK_THRESHOLD = 0.0005
 
 
 def now_ms() -> int:
@@ -377,6 +383,18 @@ class SpotPerpPaperEngine:
         self._db_factory_return_logged = False
         self._maker_probe_persist_log_emitted = False
         self._maker_probe_table_log_emitted: Dict[str, bool] = {asset: False for asset in self.assets}
+        self._stop_event: Optional[asyncio.Event] = None
+        self._edge_window_id: Optional[int] = None
+        self._edge_window_sum = 0.0
+        self._edge_window_count = 0
+        self._edge_low_windows = 0
+        self._edge_kill_switch_triggered = False
+        self._tail_risk_halt = False
+        self._paper_trading_suspended = False
+        self._paper_trading_paused = False
+        self._liquidity_window_id: Optional[int] = None
+        self._liquidity_window_count = 0
+        self._liquidity_p10 = self._load_liquidity_p10()
         self._maker_probe_persistence_enabled = os.getenv("SPOT_PERP_DISABLE_MAKER_PROBE", "").lower() not in (
             "1",
             "true",
@@ -401,6 +419,23 @@ class SpotPerpPaperEngine:
         )
         if self._maker_probe_persistence_enabled:
             self._ensure_maker_probe_table()
+        logger.info("[SPOT_PERP][LIQUIDITY] historical_p10_window_count=%d", self._liquidity_p10)
+
+    def _load_liquidity_p10(self) -> int:
+        session = self.db_session_factory()
+        with session as s:
+            rows = s.execute(
+                text(
+                    "SELECT CAST(timestamp / :window_seconds AS INTEGER) AS window_id, "
+                    "COUNT(*) AS cnt FROM spot_perp_opportunities GROUP BY window_id"
+                ),
+                {"window_seconds": EDGE_WINDOW_SECONDS},
+            ).fetchall()
+        counts = sorted(row.cnt for row in rows if row.cnt is not None)
+        if not counts:
+            return 0
+        index = int(math.floor(0.1 * (len(counts) - 1)))
+        return int(counts[max(0, index)])
 
     @staticmethod
     def _resolve_fee_rate(mode: str, maker_rate: float, taker_rate: float) -> float:
@@ -1106,6 +1141,7 @@ class SpotPerpPaperEngine:
 
     async def run_forever(self, stop_event: Optional[asyncio.Event] = None) -> None:
         self._running = True
+        self._stop_event = stop_event
         logger.info(
             "[MODE] would_trade=%s trace_every_seconds=%.1f",
             self.would_trade,
@@ -2054,6 +2090,9 @@ class SpotPerpPaperEngine:
         self._maybe_record_maker_probe_always_quotes(asset, spot_bid, spot_ask, perp_bid, perp_ask)
 
         edge_snapshot = self._build_edge_snapshot(asset, state)
+        self._handle_kill_switches(asset, edge_snapshot)
+        if self._tail_risk_halt:
+            return
         spot_label = "spot_ask" if edge_snapshot.direction == "spot_long" else "spot_bid"
         perp_label = "perp_bid" if edge_snapshot.direction == "spot_long" else "perp_ask"
         fee_spot_source = "config" if self.spot_fee_mode == "maker" else "fallback"
@@ -2148,7 +2187,7 @@ class SpotPerpPaperEngine:
             perp_ask=edge_snapshot.perp_ask,
         )
         outcome = "WOULD_TRADE" if decision == "ACCEPT" else "SKIP"
-        if outcome == "WOULD_TRADE":
+        if outcome == "WOULD_TRADE" and not self._paper_trading_blocked():
             self._maybe_execute_synthetic(edge_snapshot, decision, reject_reason)
         logger.debug(
             (
@@ -2194,6 +2233,9 @@ class SpotPerpPaperEngine:
         )
 
         if edge_snapshot.spread_gross <= 0 or edge_snapshot.pnl_net_est <= 0:
+            return
+
+        if self._paper_trading_blocked():
             return
 
         fee_total = edge_snapshot.fee_spot + edge_snapshot.fee_perp
@@ -2320,6 +2362,123 @@ class SpotPerpPaperEngine:
         self.pnl_estimated += pnl_net_estimated
         self._pnl_peak = max(self._pnl_peak, self.pnl_estimated)
         self.max_drawdown = max(self.max_drawdown, self._pnl_peak - self.pnl_estimated)
+
+    def _paper_trading_blocked(self) -> bool:
+        return self._paper_trading_suspended or self._paper_trading_paused or self._tail_risk_halt
+
+    def _current_window_id(self, ts: float) -> int:
+        return int(ts // EDGE_WINDOW_SECONDS)
+
+    def _handle_kill_switches(self, asset: str, edge_snapshot: SpotPerpEdgeSnapshot) -> None:
+        ts = time.time()
+        self._record_edge_window(edge_snapshot.pnl_net_est, ts)
+        if edge_snapshot.pnl_net_est < TAIL_RISK_THRESHOLD:
+            self._trigger_tail_risk(asset, edge_snapshot.pnl_net_est)
+            return
+        should_count_opportunity = edge_snapshot.spread_gross > 0 and edge_snapshot.pnl_net_est > 0
+        if should_count_opportunity:
+            self._record_liquidity_window(True, ts)
+        else:
+            self._record_liquidity_window(False, ts)
+
+    def _record_edge_window(self, pnl_net_est: float, ts: float) -> None:
+        window_id = self._current_window_id(ts)
+        if self._edge_window_id is None:
+            self._edge_window_id = window_id
+        if window_id != self._edge_window_id:
+            self._finalize_edge_window()
+            self._edge_window_id = window_id
+            self._edge_window_sum = 0.0
+            self._edge_window_count = 0
+        self._edge_window_sum += pnl_net_est
+        self._edge_window_count += 1
+
+    def _finalize_edge_window(self) -> None:
+        if self._edge_window_count <= 0:
+            self._edge_low_windows = 0
+            return
+        avg_edge = self._edge_window_sum / self._edge_window_count
+        if avg_edge < EDGE_DEGRADATION_THRESHOLD:
+            self._edge_low_windows += 1
+        else:
+            self._edge_low_windows = 0
+        if (
+            self._edge_low_windows >= EDGE_DEGRADATION_REQUIRED_WINDOWS
+            and not self._edge_kill_switch_triggered
+        ):
+            self._edge_kill_switch_triggered = True
+            self._paper_trading_suspended = True
+            logger.warning(
+                "[SPOT_PERP][KILL_SWITCH] edge_degradation avg_edge=%.6f windows=%d threshold=%.6f",
+                avg_edge,
+                self._edge_low_windows,
+                EDGE_DEGRADATION_THRESHOLD,
+            )
+            session = self.db_session_factory()
+            with session as s:
+                update_runtime_status(s, bot_running=True, last_heartbeat=time.time())
+
+    def _record_liquidity_window(self, opportunity_seen: bool, ts: float) -> None:
+        window_id = self._current_window_id(ts)
+        if self._liquidity_window_id is None:
+            self._liquidity_window_id = window_id
+        if window_id != self._liquidity_window_id:
+            self._finalize_liquidity_window()
+            self._liquidity_window_id = window_id
+            self._liquidity_window_count = 0
+        if opportunity_seen:
+            self._liquidity_window_count += 1
+        self._evaluate_liquidity_pause()
+
+    def _finalize_liquidity_window(self) -> None:
+        self._evaluate_liquidity_pause()
+
+    def _evaluate_liquidity_pause(self) -> None:
+        if self._liquidity_p10 <= 0:
+            self._paper_trading_paused = False
+            return
+        if self._liquidity_window_count < self._liquidity_p10:
+            if not self._paper_trading_paused:
+                logger.info(
+                    "[SPOT_PERP][LIQUIDITY] pause window_count=%d p10=%d",
+                    self._liquidity_window_count,
+                    self._liquidity_p10,
+                )
+            self._paper_trading_paused = True
+        else:
+            if self._paper_trading_paused:
+                logger.info(
+                    "[SPOT_PERP][LIQUIDITY] resume window_count=%d p10=%d",
+                    self._liquidity_window_count,
+                    self._liquidity_p10,
+                )
+            self._paper_trading_paused = False
+
+    def _trigger_tail_risk(self, asset: str, pnl_net_est: float) -> None:
+        if self._tail_risk_halt:
+            return
+        self._tail_risk_halt = True
+        logger.error(
+            "[SPOT_PERP][KILL_SWITCH] tail_risk_breach asset=%s pnl_net_est=%.6f threshold=%.6f",
+            asset,
+            pnl_net_est,
+            TAIL_RISK_THRESHOLD,
+        )
+        session = self.db_session_factory()
+        with session as s:
+            s.add(
+                DecisionOutcome(
+                    ts_ms=now_ms(),
+                    asset=asset,
+                    outcome="HALT",
+                    reason="TAIL_RISK_BREACH",
+                    detail=f"pnl_net_est={pnl_net_est:.6f}",
+                )
+            )
+            s.commit()
+        self._running = False
+        if self._stop_event:
+            self._stop_event.set()
 
     async def shutdown(self) -> None:
         """Stop background loops and emit a final summary for observability."""
