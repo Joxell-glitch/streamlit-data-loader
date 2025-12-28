@@ -4,7 +4,7 @@ import os
 from contextlib import contextmanager
 from typing import Iterator, Optional
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from src.config.loader import load_config
@@ -38,6 +38,8 @@ def get_engine(settings: Settings):
 def init_db(settings: Settings) -> None:
     engine = get_engine(settings)
     Base.metadata.create_all(engine)
+    if settings.database.backend == "sqlite":
+        _ensure_spot_perp_run_id_column(engine)
     Session = sessionmaker(engine, expire_on_commit=False)
     session = Session()
     try:
@@ -45,6 +47,16 @@ def init_db(settings: Settings) -> None:
         ensure_status_row(session)
     finally:
         session.close()
+
+
+def _ensure_spot_perp_run_id_column(engine) -> None:
+    with engine.begin() as connection:
+        result = connection.execute(text("PRAGMA table_info(spot_perp_opportunities)"))
+        columns = {row["name"] for row in result.mappings()}
+        if "run_id" not in columns:
+            connection.execute(
+                text("ALTER TABLE spot_perp_opportunities ADD COLUMN run_id TEXT")
+            )
 
 
 def get_session(settings: Optional[Settings] = None):

@@ -203,6 +203,7 @@ class SpotPerpPaperEngine:
         assets: Iterable[str],
         trading: TradingSettings,
         db_session_factory=get_session,
+        run_id: Optional[str] = None,
         taker_fee_spot: float = HL_TIER_0_FEE_TAKER_SPOT,
         taker_fee_perp: float = HL_TIER_0_FEE_TAKER_PERP,
         feed_health_settings: Optional[FeedHealthSettings] = None,
@@ -255,6 +256,7 @@ class SpotPerpPaperEngine:
         self._fee_config_warned = False
         self._warn_fee_config_if_suspect()
         self.db_session_factory = db_session_factory
+        self.run_id = run_id
         self.feed_health = feed_health_tracker or FeedHealthTracker(feed_health_settings)
         self.client.set_feed_health_tracker(self.feed_health)
         self.max_spot_spread_bps = float(getattr(trading, "max_spot_spread_bps", 500.0))
@@ -2080,6 +2082,7 @@ class SpotPerpPaperEngine:
         with session as s:
             s.add(
                 SpotPerpOpportunity(
+                    run_id=self.run_id,
                     timestamp=time.time(),
                     asset=asset,
                     direction=direction,
@@ -2164,6 +2167,7 @@ async def run_spot_perp_engine(
         assets,
         settings.trading,
         db_session_factory=db_session_factory,
+        run_id=None,
         taker_fee_spot=taker_fee_spot,
         taker_fee_perp=taker_fee_perp,
         feed_health_settings=feed_health_settings,
