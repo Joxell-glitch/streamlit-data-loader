@@ -430,3 +430,31 @@ Explicitly deprioritized:
 - pure Perp/Perp triangles on majors
 - classic cross-exchange latency arb (too crowded)
 
+
+---
+
+## 📎 Mini Appendix — Empirical Test Summary (Research Memory)
+
+This section records **validated empirical findings** from early paper-trading runs.
+Its purpose is to prevent repeated experimentation when resuming development.
+
+### Spot / Perp Baseline Tests
+- Market: Hyperliquid (paper trading)
+- Assets tested: BTC, ETH
+- Mode: execution-like simulation (deterministic haircut)
+
+### Execution Haircut Stress Test
+- Haircut **0.50%**
+  - Result: sustainable
+  - PnL / Max DD ≈ **4**
+  - Stable across BTC and ETH
+- Haircut **0.80%**
+  - Result: **not sustainable**
+  - Negative PnL
+  - Excessive drawdown
+
+### Key Decisions
+- **0.50% haircut adopted** as conservative paper-realistic baseline
+- Focus shifted from win-rate to **tail robustness**
+- Percentile-driven evaluation (**p90 / p99**) preferred over averages
+
