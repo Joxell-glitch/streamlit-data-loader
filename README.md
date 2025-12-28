@@ -28,6 +28,14 @@ The system is **research-first** and **paper-only**. It is designed to measure r
 - **Fill probability:** estimate fill probability for maker-maker (queue/latency proxy) and for taker scenarios.
 - **Slippage:** depth-aware slippage modeling; high-frequency micro edges can still be viable if slippage is bounded—focus on total daily net.
 
+### Net-Profit Focus (Definition)
+- **Edge:** raw price discrepancy before costs.
+- **Fees:** maker/taker fees per leg (config + tier fallback).
+- **Fill probability:** expected completion rate for each leg.
+- **Slippage:** depth- and latency-adjusted execution impact.
+- **Frequency:** opportunities per day for each triangle/path.
+- **KPI:** **daily net** = (edge − fees − slippage) × fill probability × frequency.
+
 ### How we decide what to trade
 - Rank candidates by **net edge × expected fill probability × frequency**, penalized by slippage/latency.
 - Select top-N assets/triangles for paper trading.
@@ -104,6 +112,10 @@ Post-research enhancements once the synthetic model is validated.
 ## Requirements
 - Python 3.8
 - Access to the internet to reach Hyperliquid APIs (for live streaming). Offline tests use mocks.
+
+## Environment & Paths
+- GitHub repo: https://github.com/<ORG>/hyperliquid-triangular-arbitrage-bot
+- VM path: `/workspace/hyperliquid-triangular-arbitrage-bot`
 
 ## Install (runtime) – Python 3.8
 `requirements-lock.txt` contiene **solo le dipendenze runtime** del bot (niente tool di sviluppo) ed è pensato per Python 3.8. Usa sempre questo file sugli ambienti che devono restare accesi a lungo.
@@ -329,6 +341,21 @@ python -m src.cli.run_spot_perp_paper --config config/config.yaml --assets BTC,E
 - `tests/`: unit tests using synthetic data.
 - `web-dashboard/`: dashboard Next.js (deployabile su Vercel) che consuma il backend FastAPI e mostra run, trade e log.
 - `.github/workflows/ci.yml`: CI running pytest.
+
+## End-of-Session Snapshot (Local)
+- `pytest -q` → **36 passed**
+- Past issue (experimental branch): `_load_liquidity_p10` raised `AttributeError: __enter__` in a local experiment; not reproducible on main.
+
+## End-of-Session Handoff Template
+- Date:
+- Branch:
+- Summary:
+- Open items:
+- Commands run:
+  - `<command>` → `<result>`
+- Results:
+  - Tests:
+  - Notes:
 
 ## Disclaimer
 This code is for research and paper trading only. Use at your own risk.
