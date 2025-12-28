@@ -151,9 +151,9 @@ python -m pip check
       cursor.execute("SELECT COUNT(*) FROM spot_perp_opportunities;")
       rows_after = cursor.fetchone()[0]
 
-  print(f\"rows_before={rows_before}\")
-  print(f\"rows_deleted={rows_deleted}\")
-  print(f\"rows_after={rows_after}\")
+  print(f"rows_before={rows_before}")
+  print(f"rows_deleted={rows_deleted}")
+  print(f"rows_after={rows_after}")
   PY
   ```
 - **Nota importante:** non attivare purge automatico di default; è una procedura opzionale e controllata.
