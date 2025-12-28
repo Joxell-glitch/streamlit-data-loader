@@ -339,3 +339,94 @@ This code is for research and paper trading only. Use at your own risk.
 - Risultato chiave: Haircut 0.50% sostenibile (PnL/DD ~4 su BTC ed ETH); Haircut 0.80% non sostenibile (PnL negativo, DD elevato).
 - Decisione: 0.50% adottato come baseline conservativa per paper-realistica.
 - Confermato approccio percentile-driven (p90/p99 > winrate).
+
+---
+
+# 🔍 Strategic Scope, Edge Prioritization & Research Context
+
+> This section records explicit design decisions, validated findings, and research priorities that emerged from real paper runs and system-level tests.
+> It exists to prevent conceptual drift and repeated exploratory work when resuming development or starting a new chat/session.
+
+## ✅ Validated Runtime Baseline (Empirical)
+
+Empirically validated from live paper runs:
+
+- **Spot/Perp paper loop runs stable** (no crash in steady execution)
+- **SQLite persistence is active and coherent** (`data/arb_bot.sqlite`)
+- Opportunity counts can reach **tens of thousands** (feeds alive + scanner active + sampling OK)
+- Run lifecycle is now trackable via DB metadata:
+  - `run_id`
+  - start/end timestamps
+  - config snapshot
+
+**Conclusion:** runtime is a valid **research baseline**. Next work focuses on **edge quality**, not stability.
+
+## ✅ Scope decision: which combinations matter
+
+### ❌ Spot / Spot — explicitly out of scope (Hyperliquid-specific)
+
+Spot/Spot arbitrage is intentionally excluded:
+
+- Spot markets are almost exclusively **asset / USDC**
+- No meaningful **cross-asset spot** pairs (BTC/ETH, ETH/SOL, etc.)
+- Therefore **pure spot triangles do not exist** on HL
+
+**Conclusion:** Spot/Spot adds noise and complexity without producing edge → excluded by design.
+
+### ⚠️ Perp / Perp — secondary, comparative baseline only
+
+Perp/Perp relationships exist and can be useful for research:
+
+- basis / funding propagation studies
+- measuring **inter-perp synchronization speed**
+- efficiency benchmarking
+
+But:
+
+- markets are strongly arbitraged
+- edges are small and short-lived
+- live survivability is questionable without very low latency and aggressive execution
+
+**Conclusion:** useful as a **research baseline**, not the primary profit engine.
+
+### ✅ Spot / Perp — core focus (economic + microstructure)
+
+Spot/Perp is the core axis of the project:
+
+- different participant flows
+- different reaction latencies
+- dislocations often driven by:
+  - funding expectations (dynamic)
+  - spot-driven flows
+  - liquidation cascades
+
+Edges here are typically larger, more persistent, and less crowded than pure perp/perp micro-arbs.
+
+**Conclusion:** Spot/Perp = **PRIMARY PRIORITY**.
+
+## 🔄 Adaptive Edge Discovery (Auto-scan philosophy)
+
+Edges are not static. The system is designed to:
+
+- discover new opportunity structures (where none were detected before)
+- detect when a previously valid structure **degrades** or **dies**
+- measure **persistence**, not just frequency
+- abandon dead structures early to avoid false “paper edge”
+
+The scanner is a **research instrument**, not a blind executor.
+
+## 🔬 Research directions (ordered by empirical value)
+
+1) Lead–Lag inter-market (non-triangular)  
+2) Dynamic basis / funding dislocations (changes, not static carry)  
+3) Orderbook microstructure (queue, depth, resilience)  
+4) Liquidation-driven moves (clusters/cascades)  
+5) Cross-asset correlation breaks (spread mean-reversion)
+
+Explicitly deprioritized:
+
+- Spot/Spot
+- static funding “carry”
+- pure Perp/Perp triangles on majors
+- classic cross-exchange latency arb (too crowded)
+
