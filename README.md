@@ -112,7 +112,7 @@ python -m pip install -r requirements-lock.txt
 python -m pip check
 ```
 
-- Il database SQLite di default è `data/arb_bot.sqlite` (viene creato automaticamente). Puoi leggerlo con un qualsiasi client SQLite o `python -m sqlite3 data/arb_bot.sqlite ".tables"`.
+- Il database SQLite di default è `data/arb_bot.sqlite` (viene creato automaticamente). Puoi leggerlo con un qualsiasi client SQLite o `sqlite3 data/arb_bot.sqlite ".tables"`.
 - Il file di configurazione di riferimento è `config/config.yaml` (puoi copiarlo da `config/config.example.yaml`).
 
 ### Data Retention (FIFO) – SQLite (procedura MANUALE)
@@ -120,13 +120,36 @@ python -m pip check
 - **Quando usarla:** DB che cresce nel tempo, più coin/asset tracciati, run lunghi.
 - **Backup obbligatorio prima del purge** (non saltare questo passaggio):
   ```bash
-  cp data/arb_bot.sqlite "data/arb_bot.sqlite.bak.$(date +%Y%m%d-%H%M%S)"
+  mkdir -p data/backups
+  cp -a data/arb_bot.sqlite "data/backups/arb_bot.sqlite.$(date +%Y%m%d_%H%M%S).bak"
   ```
 - **Purge “keep last 24h” + VACUUM** (manuale e controllato):
   ```bash
-  python -m sqlite3 data/arb_bot.sqlite \
-    "DELETE FROM spot_perp_opportunities WHERE timestamp < strftime('%s','now','-24 hours');"
-  python -m sqlite3 data/arb_bot.sqlite "VACUUM;"
+  python - <<'PY'
+  import sqlite3
+  import time
+
+  cutoff = time.time() - 24 * 3600
+  db_path = "data/arb_bot.sqlite"
+
+  with sqlite3.connect(db_path) as conn:
+      cursor = conn.cursor()
+      cursor.execute("SELECT COUNT(*) FROM spot_perp_opportunities;")
+      rows_before = cursor.fetchone()[0]
+      cursor.execute(
+          "DELETE FROM spot_perp_opportunities WHERE timestamp < ?;",
+          (cutoff,),
+      )
+      rows_deleted = cursor.rowcount
+      conn.commit()
+      cursor.execute("VACUUM;")
+      cursor.execute("SELECT COUNT(*) FROM spot_perp_opportunities;")
+      rows_after = cursor.fetchone()[0]
+
+  print(f\"rows_before={rows_before}\")
+  print(f\"rows_deleted={rows_deleted}\")
+  print(f\"rows_after={rows_after}\")
+  PY
   ```
 - **Nota importante:** non attivare purge automatico di default; è una procedura opzionale e controllata.
 
