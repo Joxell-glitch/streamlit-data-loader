@@ -1700,25 +1700,46 @@ class SpotPerpPaperEngine:
             state.perp.best_ask,
         )
 
-    def _should_log_trace(self, asset: str, ready: bool, reason: Optional[str]) -> bool:
+    def _normalize_decision(self, ready: bool, reason: Optional[str]) -> tuple[str, str]:
+        if self._tail_risk_halt:
+            return "HALT", "TAIL_RISK"
+        if not ready or reason is not None:
+            return "SKIP", reason or "GATE_BLOCK"
+        return "READY", "OK"
+
+    def _should_log_trace(
+        self,
+        asset: str,
+        ready: bool,
+        reason: Optional[str],
+        update_state: bool = True,
+    ) -> bool:
         state = self._trace_state[asset]
         now = time.time()
         interval_elapsed = now - state["last_log"] >= self.trace_every_seconds
-        reason_changed = (reason or "OK") != state["last_reason"]
+        _, normalized_reason = self._normalize_decision(ready, reason)
+        reason_changed = normalized_reason != state["last_reason"]
         ready_changed = ready != state["last_ready"]
         if not (interval_elapsed or reason_changed or ready_changed):
             return False
-        if ready_changed:
-            state["ready_transitions"] += 1
-        state["last_log"] = now
-        state["last_ready"] = ready
-        state["last_reason"] = reason or "OK"
-        state["trace_emitted"] += 1
+        if update_state:
+            if ready_changed:
+                state["ready_transitions"] += 1
+            state["last_log"] = now
+            state["last_ready"] = ready
+            state["last_reason"] = normalized_reason
+            state["trace_emitted"] += 1
         return True
 
-    def _log_decision_trace(self, asset: str, ready: bool, reason: Optional[str], details: Dict[str, Any]) -> None:
-        if not self._should_log_trace(asset, ready, reason):
-            return
+    def _log_decision_trace(
+        self,
+        asset: str,
+        ready: bool,
+        reason: Optional[str],
+        details: Optional[Dict[str, Any]],
+    ) -> None:
+        decision, normalized_reason = self._normalize_decision(ready, reason)
+        details = details or {}
         gates = ",".join([f"{k}={int(v)}" for k, v in details.get("gates", {}).items()])
         prices_dict = details.get("prices", {})
         prices = (
@@ -1736,12 +1757,13 @@ class SpotPerpPaperEngine:
         counters = self._trace_state[asset]
         logger.info(
             (
-                "[DECISION_TRACE] asset=%s ready=%d skip_reason=%s gates=%s prices=%s ages=%s "
+                "[DECISION_TRACE] asset=%s decision=%s ready=%d reason=%s gates=%s prices=%s ages=%s "
                 "integrity=%s trace_emitted=%d ready_transitions=%d last_reason=%s"
             ),
             asset,
+            decision,
             1 if ready else 0,
-            reason or "OK",
+            normalized_reason,
             gates,
             prices,
             ages,
@@ -2079,7 +2101,8 @@ class SpotPerpPaperEngine:
         snapshot = self.feed_health.build_asset_snapshot(asset)
         ready, reason, details = self._evaluate_gates(asset, snapshot, state)
         # Decision trace keeps gating visibility deterministic for each asset.
-        self._log_decision_trace(asset, ready, reason, details)
+        if self._should_log_trace(asset, ready, reason, update_state=True):
+            self._log_decision_trace(asset, ready, reason, details)
         if reason:
             self._log_strategy_skip(asset, reason, snapshot)
             return
