@@ -114,8 +114,8 @@ Post-research enhancements once the synthetic model is validated.
 - Access to the internet to reach Hyperliquid APIs (for live streaming). Offline tests use mocks.
 
 ## Environment & Paths
-- GitHub repo: https://github.com/<ORG>/hyperliquid-triangular-arbitrage-bot
-- VM path: `/workspace/hyperliquid-triangular-arbitrage-bot`
+- GitHub repo: https://github.com/Joxell-glitch/hyperliquid-triangular-arbitrage-bot
+- VM path: `/home/ubuntu/hyperliquid-triangular-arbitrage-bot`
 
 ## Install (runtime) – Python 3.8
 `requirements-lock.txt` contiene **solo le dipendenze runtime** del bot (niente tool di sviluppo) ed è pensato per Python 3.8. Usa sempre questo file sugli ambienti che devono restare accesi a lungo.
