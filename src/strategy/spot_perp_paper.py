@@ -40,6 +40,45 @@ class SyntheticSpotPerpTrade:
     decision: str
     reject_reason: str
 
+
+class SyntheticSpotPerpExecutor:
+    def __init__(self, enabled: bool = True) -> None:
+        self.enabled = enabled
+
+    def execute(self, trade_input: Dict[str, Any]) -> SyntheticSpotPerpTrade:
+        if not self.enabled:
+            raise RuntimeError("SyntheticSpotPerpExecutor is disabled.")
+        spot_price = float(trade_input["spot_price"])
+        perp_price = float(trade_input["perp_price"])
+        qty = float(trade_input["qty"])
+        notional = abs(qty * spot_price)
+        gross_edge_rate = float(trade_input["gross_edge"])
+        gross_edge = gross_edge_rate * notional
+        fees_spot = float(trade_input["fees_spot"])
+        fees_perp = float(trade_input["fees_perp"])
+        slippage_rate = float(trade_input.get("slippage_rate", 0.0))
+        slippage_cost = slippage_rate * notional
+        funding_estimate = float(trade_input.get("funding_estimate", 0.0))
+        net_edge = gross_edge - fees_spot - fees_perp - slippage_cost - funding_estimate
+
+        return SyntheticSpotPerpTrade(
+            asset=str(trade_input["asset"]),
+            spot_symbol=str(trade_input["spot_symbol"]),
+            perp_symbol=str(trade_input["perp_symbol"]),
+            direction=str(trade_input["direction"]),
+            spot_price=spot_price,
+            perp_price=perp_price,
+            spot_qty=qty,
+            perp_qty=qty,
+            gross_edge=gross_edge,
+            net_edge=net_edge,
+            fees_spot=fees_spot,
+            fees_perp=fees_perp,
+            timestamp_ms=int(trade_input["timestamp_ms"]),
+            decision=str(trade_input["decision"]),
+            reject_reason=str(trade_input["reject_reason"]),
+        )
+
 HL_TIER_0_FEE_TAKER_SPOT = 0.001
 HL_TIER_0_FEE_TAKER_PERP = 0.0005
 
@@ -306,6 +345,12 @@ class SpotPerpPaperEngine:
             self._validation_recorder = ValidationRecorder(self.db_session_factory, self.validation_settings)
         self._last_spot_diag_log: Dict[str, float] = {asset: 0.0 for asset in self.assets}
         self.would_trade = would_trade
+        self.synthetic_execution_enabled = os.getenv("SPOT_PERP_SYNTH_EXEC_ENABLED", "0").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        self.synthetic_executor = SyntheticSpotPerpExecutor(enabled=self.synthetic_execution_enabled)
         self.trace_every_seconds = float(trace_every_seconds)
         self.auto_assets_enabled = auto_assets_enabled
         self.auto_assets_warmup_seconds = float(auto_assets_warmup_seconds)
@@ -1647,6 +1692,47 @@ class SpotPerpPaperEngine:
             note or "evaluation_not_implemented",
         )
 
+    def _maybe_execute_synthetic(
+        self,
+        edge_snapshot: SpotPerpEdgeSnapshot,
+        decision: str,
+        reject_reason: str,
+    ) -> None:
+        if not self.synthetic_executor or not self.synthetic_executor.enabled:
+            return
+        trade_input = {
+            "asset": edge_snapshot.asset,
+            "spot_symbol": self._asset_spot_pairs.get(edge_snapshot.asset, edge_snapshot.asset),
+            "perp_symbol": edge_snapshot.asset,
+            "direction": (
+                "long_spot_short_perp"
+                if edge_snapshot.direction == "spot_long"
+                else "short_spot_long_perp"
+            ),
+            "spot_price": edge_snapshot.spot_price,
+            "perp_price": edge_snapshot.perp_price,
+            "qty": edge_snapshot.qty,
+            "gross_edge": edge_snapshot.spread_gross,
+            "fees_spot": edge_snapshot.fee_spot,
+            "fees_perp": edge_snapshot.fee_perp,
+            "slippage_rate": edge_snapshot.slippage_rate,
+            "funding_estimate": edge_snapshot.funding_estimate,
+            "timestamp_ms": now_ms(),
+            "decision": decision,
+            "reject_reason": reject_reason,
+        }
+        try:
+            synthetic_trade = self.synthetic_executor.execute(trade_input)
+        except Exception as exc:
+            logger.warning(
+                "[SYNTH_EXEC] failed asset=%s error=%s",
+                edge_snapshot.asset,
+                exc,
+                exc_info=True,
+            )
+            return
+        logger.info("[SYNTH_EXEC] %s", synthetic_trade)
+
     def _log_below_min_edge(self, edge_snapshot: SpotPerpEdgeSnapshot, spot_age_ms: Optional[float]) -> None:
         if not self._log_below_min_edge_enabled:
             return
@@ -1931,6 +2017,9 @@ class SpotPerpPaperEngine:
             perp_bid=edge_snapshot.perp_bid,
             perp_ask=edge_snapshot.perp_ask,
         )
+        outcome = "WOULD_TRADE" if decision == "ACCEPT" else "SKIP"
+        if outcome == "WOULD_TRADE":
+            self._maybe_execute_synthetic(edge_snapshot, decision, reject_reason)
         logger.debug(
             (
                 "[SPOT_PERP][FILTER] asset=%s spread_gross=%+.6f edge_bps=%.2f min_edge_bps=%.2f "
