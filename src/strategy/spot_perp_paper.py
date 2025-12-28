@@ -8,7 +8,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
-from sqlalchemy import or_
+from sqlalchemy import or_, text
 
 from src.config.loader import load_config
 from src.config.models import FeedHealthSettings, Settings, TradingSettings, ValidationSettings
@@ -382,6 +382,8 @@ class SpotPerpPaperEngine:
             "true",
             "yes",
         )
+        self._synthetic_trades_table_ready = False
+        self._synthetic_trades_table_warned = False
         self._maker_probe_always_enabled = os.getenv("SPOT_PERP_MAKER_PROBE_ALWAYS", "").lower() in (
             "1",
             "true",
@@ -721,6 +723,47 @@ class SpotPerpPaperEngine:
             if not self._maker_probe_warned:
                 logger.warning("[SPOT_PERP][MAKER_PROBE] ensure_table_failed", exc_info=True)
                 self._maker_probe_warned = True
+
+    def _ensure_synthetic_spot_perp_table(self) -> None:
+        if self._synthetic_trades_table_ready:
+            return
+        try:
+            with self.db_session_factory() as session:
+                session.execute(
+                    text(
+                        """
+                        CREATE TABLE IF NOT EXISTS synthetic_spot_perp_trades (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            run_id TEXT,
+                            timestamp_ms INTEGER,
+                            asset TEXT,
+                            spot_symbol TEXT,
+                            perp_symbol TEXT,
+                            direction TEXT,
+                            spot_price REAL,
+                            perp_price REAL,
+                            qty REAL,
+                            gross_edge_usd REAL,
+                            net_edge_usd REAL,
+                            fees_spot REAL,
+                            fees_perp REAL,
+                            slippage_cost REAL,
+                            funding_cost REAL,
+                            decision TEXT,
+                            reject_reason TEXT
+                        )
+                        """
+                    )
+                )
+                session.commit()
+            self._synthetic_trades_table_ready = True
+        except Exception:
+            if not self._synthetic_trades_table_warned:
+                logger.warning(
+                    "[SPOT_PERP][SYNTHETIC_TRADE] ensure_table_failed",
+                    exc_info=True,
+                )
+                self._synthetic_trades_table_warned = True
 
     @staticmethod
     def _is_session_like(candidate: Any) -> bool:
@@ -1732,6 +1775,93 @@ class SpotPerpPaperEngine:
             )
             return
         logger.info("[SYNTH_EXEC] %s", synthetic_trade)
+        self._persist_synthetic_trade(
+            synthetic_trade=synthetic_trade,
+            slippage_cost=float(trade_input.get("slippage_rate", 0.0))
+            * abs(synthetic_trade.spot_qty * synthetic_trade.spot_price),
+            funding_cost=float(trade_input.get("funding_estimate", 0.0)),
+        )
+
+    def _persist_synthetic_trade(
+        self,
+        synthetic_trade: SyntheticSpotPerpTrade,
+        slippage_cost: float,
+        funding_cost: float,
+    ) -> None:
+        try:
+            self._ensure_synthetic_spot_perp_table()
+            if not self._synthetic_trades_table_ready:
+                return
+            with self.db_session_factory() as session:
+                session.execute(
+                    text(
+                        """
+                        INSERT INTO synthetic_spot_perp_trades (
+                            run_id,
+                            timestamp_ms,
+                            asset,
+                            spot_symbol,
+                            perp_symbol,
+                            direction,
+                            spot_price,
+                            perp_price,
+                            qty,
+                            gross_edge_usd,
+                            net_edge_usd,
+                            fees_spot,
+                            fees_perp,
+                            slippage_cost,
+                            funding_cost,
+                            decision,
+                            reject_reason
+                        ) VALUES (
+                            :run_id,
+                            :timestamp_ms,
+                            :asset,
+                            :spot_symbol,
+                            :perp_symbol,
+                            :direction,
+                            :spot_price,
+                            :perp_price,
+                            :qty,
+                            :gross_edge_usd,
+                            :net_edge_usd,
+                            :fees_spot,
+                            :fees_perp,
+                            :slippage_cost,
+                            :funding_cost,
+                            :decision,
+                            :reject_reason
+                        )
+                        """
+                    ),
+                    {
+                        "run_id": self.run_id,
+                        "timestamp_ms": synthetic_trade.timestamp_ms,
+                        "asset": synthetic_trade.asset,
+                        "spot_symbol": synthetic_trade.spot_symbol,
+                        "perp_symbol": synthetic_trade.perp_symbol,
+                        "direction": synthetic_trade.direction,
+                        "spot_price": synthetic_trade.spot_price,
+                        "perp_price": synthetic_trade.perp_price,
+                        "qty": synthetic_trade.spot_qty,
+                        "gross_edge_usd": synthetic_trade.gross_edge,
+                        "net_edge_usd": synthetic_trade.net_edge,
+                        "fees_spot": synthetic_trade.fees_spot,
+                        "fees_perp": synthetic_trade.fees_perp,
+                        "slippage_cost": slippage_cost,
+                        "funding_cost": funding_cost,
+                        "decision": synthetic_trade.decision,
+                        "reject_reason": synthetic_trade.reject_reason,
+                    },
+                )
+                session.commit()
+        except Exception:
+            logger.warning(
+                "[SPOT_PERP][SYNTHETIC_TRADE] persist_failed asset=%s",
+                synthetic_trade.asset,
+                exc_info=True,
+            )
 
     def _log_below_min_edge(self, edge_snapshot: SpotPerpEdgeSnapshot, spot_age_ms: Optional[float]) -> None:
         if not self._log_below_min_edge_enabled:
