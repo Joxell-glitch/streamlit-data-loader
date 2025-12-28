@@ -458,3 +458,33 @@ Its purpose is to prevent repeated experimentation when resuming development.
 - Focus shifted from win-rate to **tail robustness**
 - Percentile-driven evaluation (**p90 / p99**) preferred over averages
 
+
+
+## Session Log / Snapshot (End of Session – 2025-12-28)
+
+- Introduced a paper-only Synthetic Execution Layer for Spot/Perp, producing atomic synthetic trades.
+- Validated Spot/Perp edge on BTC with positive, stable net PnL and no negative tail.
+- Implemented persistent dataset for synthetic trades (SQLite, append-only) to enable offline analysis.
+- Confirmed absence of overcounting and duplicate trade states (1 trade = 1 timestamp).
+- ETH Spot/Perp observed as weak/quantized; BTC confirmed as primary research focus.
+
+### RoadMap – Consolidated Status
+
+#### A) Runtime Stability & Baseline
+- [DONE] Spot/Perp paper trading loop and persistence
+- [DONE] Synthetic Spot/Perp execution model (paper-only, atomic trades)
+
+#### B) Feed Integrity & Observability
+- [DONE] Feed health and shutdown-safe async lifecycle
+
+#### C) Strategy Logic Validation
+- [DONE] Spot/Perp validation on BTC (positive distribution, no negative tail)
+- [TODO] Extend validation to additional assets only after new edge discovery
+
+#### D) Dataset & Offline Analysis
+- [DONE] Persistent dataset for synthetic Spot/Perp trades (SQLite)
+- [DONE] Offline analysis of distribution, frequency, and tail behavior
+
+#### E) Hardening & Risk Controls
+- [DONE] Guardrails against duplicate trade states and overcounting
+- [BLOCKED] Live execution (explicitly out of scope until further validation)
