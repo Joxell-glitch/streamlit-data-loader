@@ -12,6 +12,7 @@ from src.config.models import TradingSettings
 from src.core.logging import get_logger
 from src.db.models import Opportunity as OpportunityModel, PaperTrade, PortfolioSnapshot, RunMetadata
 from src.db.session import get_session
+from src.utils.session_scope import session_scope
 
 logger = get_logger(__name__)
 
@@ -69,8 +70,7 @@ class PaperTrader:
         return amount * (1 - FEE_RATE)
 
     async def handle_opportunity(self, opp: Opportunity) -> None:
-        session = self.db_session_factory()
-        with session as s:
+        with session_scope(self.db_session_factory) as s:
             s.add(
                 OpportunityModel(
                     run_id=self.run_id,
@@ -129,8 +129,7 @@ class PaperTrader:
         )
 
     def _record_trade(self, opp: Opportunity, execution: Optional[ExecutionResult], executed: bool, reason: Optional[str]) -> None:
-        session = self.db_session_factory()
-        with session as s:
+        with session_scope(self.db_session_factory) as s:
             s.add(
                 PaperTrade(
                     run_id=self.run_id,

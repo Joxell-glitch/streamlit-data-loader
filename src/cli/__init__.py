@@ -19,6 +19,7 @@ from src.arb.orderbook_cache import OrderbookCache
 from src.arb.triangular_scanner import TriangularScanner
 from src.arb.paper_trader import PaperTrader
 from src.arb.profit_persistence import ProfitRecorder, save_profit_opportunity_async
+from src.utils.session_scope import session_scope
 
 app = typer.Typer(add_completion=False)
 logger = get_logger(__name__)
@@ -72,13 +73,11 @@ def run_paper_bot_command(config_path: str = "config/config.yaml", run_id: Optio
         profit_recorder = ProfitRecorder(db_session_factory=session_factory)
 
         def _update_status(**fields):
-            session = session_factory()
-            with session as s:
+            with session_scope(session_factory) as s:
                 update_runtime_status(s, **fields)
 
         def _get_status():
-            session = session_factory()
-            with session as s:
+            with session_scope(session_factory) as s:
                 return get_runtime_status(s)
 
         _update_status(bot_running=True, ws_connected=False, last_heartbeat=time.time())

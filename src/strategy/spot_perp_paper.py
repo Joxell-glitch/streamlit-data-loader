@@ -19,6 +19,7 @@ from src.db.runtime_status import update_runtime_status
 from src.db.session import get_session
 from src.hyperliquid_client.client import HyperliquidClient
 from src.observability.feed_health import FeedHealthTracker
+from src.utils.session_scope import session_scope
 
 logger = get_logger(__name__)
 
@@ -422,8 +423,7 @@ class SpotPerpPaperEngine:
         logger.info("[SPOT_PERP][LIQUIDITY] historical_p10_window_count=%d", self._liquidity_p10)
 
     def _load_liquidity_p10(self) -> int:
-        session = self.db_session_factory()
-        with session as s:
+        with session_scope(self.db_session_factory) as s:
             rows = s.execute(
                 text(
                     "SELECT CAST(timestamp / :window_seconds AS INTEGER) AS window_id, "
@@ -2339,8 +2339,7 @@ class SpotPerpPaperEngine:
         funding_estimated: float,
         pnl_net_estimated: float,
     ) -> None:
-        session = self.db_session_factory()
-        with session as s:
+        with session_scope(self.db_session_factory) as s:
             s.add(
                 SpotPerpOpportunity(
                     run_id=self.run_id,
@@ -2414,8 +2413,7 @@ class SpotPerpPaperEngine:
                 self._edge_low_windows,
                 EDGE_DEGRADATION_THRESHOLD,
             )
-            session = self.db_session_factory()
-            with session as s:
+            with session_scope(self.db_session_factory) as s:
                 update_runtime_status(s, bot_running=True, last_heartbeat=time.time())
 
     def _record_liquidity_window(self, opportunity_seen: bool, ts: float) -> None:
@@ -2464,8 +2462,7 @@ class SpotPerpPaperEngine:
             pnl_net_est,
             TAIL_RISK_THRESHOLD,
         )
-        session = self.db_session_factory()
-        with session as s:
+        with session_scope(self.db_session_factory) as s:
             s.add(
                 DecisionOutcome(
                     ts_ms=now_ms(),
