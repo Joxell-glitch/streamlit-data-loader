@@ -4,10 +4,13 @@ import asyncio
 import argparse
 import logging
 import os
+import uuid
 from typing import Optional
 
 from src.config.loader import load_config
+from src.config.snapshot import safe_config_snapshot
 from src.core.logging import get_logger, setup_logging
+from src.db.run_metadata import create_run_metadata, update_run_metadata_end
 from src.db.session import get_session, init_db
 from src.hyperliquid_client.client import HyperliquidClient
 from src.cli.spot_perp_assets import select_auto_assets
@@ -70,12 +73,16 @@ async def _run_engine(
     else:
         assets = ["BTC"]
     logger.info("Starting spot-perp paper engine for assets: %s", ", ".join(assets))
+    run_id = str(uuid.uuid4())
     session_factory = get_session(settings)
+    with session_factory() as session:
+        create_run_metadata(session, run_id, safe_config_snapshot(settings))
     engine = SpotPerpPaperEngine(
         client,
         assets,
         settings.trading,
         db_session_factory=session_factory,
+        run_id=run_id,
         feed_health_settings=settings.observability.feed_health,
         feed_health_tracker=feed_health,
         validation_settings=settings.validation,
@@ -91,6 +98,8 @@ async def _run_engine(
         logger.info("Keyboard interrupt received, shutting down spot-perp engine")
         stop_event.set()
     finally:
+        with session_factory() as session:
+            update_run_metadata_end(session, run_id)
         await engine.shutdown()  # log summary and stop background tasks if still running
         await client.close()
         logger.info("Spot-perp paper engine stopped")

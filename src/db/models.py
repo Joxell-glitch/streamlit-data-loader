@@ -111,6 +111,7 @@ class ProfitOpportunity(Base):
 class SpotPerpOpportunity(Base):
     __tablename__ = "spot_perp_opportunities"
     id = Column(Integer, primary_key=True)
+    run_id = Column(String, index=True, nullable=True)
     timestamp = Column(Float)
     asset = Column(String, index=True)
     direction = Column(String)
