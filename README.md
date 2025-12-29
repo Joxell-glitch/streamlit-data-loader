@@ -1,86 +1,96 @@
 # Hyperliquid Triangular Arbitrage Bot
 
-The system is **research-first** and **paper-only**. It is designed to measure real,
-survivable edge under realistic microstructure constraints.
+The system is **research-first** and **paper-only**.
+It is designed to measure **real, survivable edge** under realistic market microstructure constraints.
 
-### Net-Profit Focus (Definition)
-- **Edge:** raw price discrepancy before costs.
-- **Fees:** maker/taker fees per leg (config + tier fallback).
-- **Fill probability:** expected completion rate for each leg.
-- **Slippage:** depth- and latency-adjusted execution impact.
-- **Frequency:** opportunities per day for each triangle/path.
-- **KPI:** **daily net** = (edge − fees − slippage) × fill probability × frequency.
+## Net-Profit Focus (Definition)
 
-### How we decide what to trade
-- Rank candidates by **net edge × expected fill probability × frequency**, penalized by slippage/latency.
-- Select top-N assets/triangles for paper trading.
-- Re-run selection periodically via **Auto-Scan** to adapt to new listings and edge decay.
+- **Edge:** raw price discrepancy before costs
+- **Fees:** maker/taker fees per leg (config + tier fallback)
+- **Fill probability:** expected completion rate for each leg
+- **Slippage:** depth- and latency-adjusted execution impact
+- **Frequency:** opportunities per day per asset/path
+- **KPI:**  
+  **daily net** = (edge − fees − slippage) × fill probability × frequency
+
+## How Trading Candidates Are Selected
+
+- Rank assets by **net edge × expected fill probability × frequency**
+- Penalize for slippage and latency
+- Select top-N candidates for paper evaluation
+- Periodically re-run selection via **Auto-Scan** to adapt to new listings and edge decay
 
 ## Features
-- Async architecture with `httpx` (REST) and `websockets` (order books).
-- Configurable via YAML (`config/config.yaml`) plus environment variables loaded from `.env`.
-- Supports mainnet and testnet Hyperliquid endpoints.
-- Paper portfolio tracking with per-run IDs and DB persistence (SQLite by default).
-- Synthetic Spot/Perp edge evaluation (paper-only).
-- Typer-based CLI to run the bot, init DB, and analyze runs.
-- GitHub Actions CI running pytest.
+
+- Async architecture using `httpx` (REST) and `websockets` (order books)
+- YAML-based configuration (`config/config.yaml`) + environment variables
+- Hyperliquid mainnet and testnet support
+- Paper portfolio tracking with per-run IDs
+- SQLite persistence (default)
+- Synthetic Spot/Perp edge evaluation (paper-only)
+- Typer-based CLI
+- GitHub Actions CI running pytest
 
 ## Roadmap & Project Status
 
-### Stato attuale RoadMap
-- **A) Runtime Stability & Baseline** — COMPLETATA
-- **B) Feed Integrity & Observability** — COMPLETATA (Decision Trace deterministico)
-- **C) Strategy Logic Validation** — NON AVVIATA (Autoscan non ancora eseguito)
-- **D) Dataset & Offline Analysis** — PARZIALE
-- **E) Hardening & Risk Controls** — BLOCCATA (dipende da C)
-- **F) Future Extensions** — BLOCCATA
+### Current Roadmap Status
 
-### Snapshot di handoff (stato attuale)
-- Fonte della verità: **VM**
-- Branch `main` allineato alla VM
-- Tutti i test pytest passano
-- Decision Trace normalizzato (**READY / SKIP / HALT**)
-- Kill-switch isolati dai test
-- Autoscan **NON** ancora eseguito
-- Nessuna ottimizzazione PnL avviata
+- **A) Runtime Stability & Baseline** — COMPLETED
+- **B) Feed Integrity & Observability** — COMPLETED (Deterministic Decision Trace)
+- **C) Strategy Logic Validation** — NOT STARTED (Autoscan not executed)
+- **D) Dataset & Offline Analysis** — PARTIAL
+- **E) Hardening & Risk Controls** — BLOCKED (depends on C)
+- **F) Future Extensions** — BLOCKED
 
-## Handoff & Continuity Prompt
-Questa README è la **fonte unica di contesto e continuità** del progetto.
+### Handoff Snapshot (Current State)
 
-Ogni nuova chat deve:
-- leggere **integralmente** questo file
-- continuare **senza fare assunzioni esterne**
-- rispettare le Linee Guida Operative sottostanti
+- Source of truth: **VM**
+- `main` branch aligned with VM
+- All pytest tests passing
+- Decision Trace normalized (**READY / SKIP / HALT**)
+- Kill-switch logic isolated from tests
+- Autoscan **NOT** executed
+- No PnL optimization performed
 
-Questo prompt viene **sempre sovrascritto**, mai appeso.
+## Continuity & Execution Contract
 
-## Linee Guida Operative
+This README is the **canonical high-level context document**.
 
-Da ora in poi:
-- L’utente **NON scrive né modifica codice**
-- L’assistente prepara **solo**:
-  - Prompt per Codex (sempre in blocchi di codice)
-  - Comandi per la VM (sempre in blocchi di codice, con output filtrato)
+Cursor must:
+- Read this file entirely before acting
+- Treat it as a **binding contract**
+- Continue work without external assumptions
 
-Regola operativa:
-- **Codex = propone**
-- **VM = fonte della verità**
-- **GitHub = specchio della VM**
+Operational continuity is enforced through:
+- `README.md` — high-level project state
+- `PROTOCOL.md` — execution rules and constraints
+- `ROADMAP.md` — active phase and micro-step
+- `DECISIONS.md` — decisions taken and explicitly avoided
+- `SESSION_*.json` — session-level technical summaries
 
-Metodo di lavoro:
-- Micro-step (max 1–2 passi)
-- Stop obbligatorio in attesa dell’output VM
-- Vietato anticipare step futuri
-- Approccio deterministico, niente trial-and-error
-- Se serve visione completa → chiedere ZIP/file prima
-- Spiegazioni brevi, chiare, zero ridondanza
-- Nessuna scelta multipla: l’assistente guida e decide
-- La RoadMap nel README va aggiornata periodicamente con le stesse diciture
+## Operational Guidelines (Cursor)
+
+- Cursor operates directly on the **VM**
+- Cursor has full read/write access to the codebase
+- Cursor executes changes autonomously
+
+Principles:
+- Prefer **deterministic solutions**
+- Avoid exploratory or speculative changes unless explicitly requested
+- If information is insufficient, **stop and ask**
+- Detect and report VM/GitHub divergence; do not silently auto-fix
+
+Execution model:
+- Cursor = executor and analyst
+- Human = decision authority
+- GitHub = persistence layer (may lag VM)
 
 ## Requirements
+
 - Python 3.8
-- Accesso alle API Hyperliquid (offline test via mock)
+- Network access to Hyperliquid APIs (offline tests via mocks)
 
 ## Environment & Paths
-- Repo GitHub: https://github.com/Joxell-glitch/hyperliquid-triangular-arbitrage-bot
+
+- GitHub repository: https://github.com/Joxell-glitch/hyperliquid-triangular-arbitrage-bot
 - VM path: `/home/ubuntu/hyperliquid-triangular-arbitrage-bot`
